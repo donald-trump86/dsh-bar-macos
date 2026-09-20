@@ -20,11 +20,12 @@ SDK_PATH="$(xcrun --show-sdk-path)"
 
 xcrun swiftc -O -parse-as-library \
     -sdk "$SDK_PATH" \
-    -framework Cocoa -framework Carbon \
+    -framework Cocoa -framework Carbon -framework ServiceManagement \
     Sources/main.swift \
     Sources/AppDelegate.swift \
     Sources/ServiceManager.swift \
     Sources/HotKeyManager.swift \
+    Sources/SettingsManager.swift \
     Sources/DashboardWindow.swift \
     -o "build/${BINARY_NAME}"
 

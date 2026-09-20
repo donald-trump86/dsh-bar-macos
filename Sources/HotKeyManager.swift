@@ -7,18 +7,23 @@ final class HotKeyManager {
     
     typealias HotKeyAction = () -> Void
     private var actions: [UInt32: HotKeyAction] = [:]
+    private var hotKeyRefs: [UInt32: EventHotKeyRef] = [:]
     private var eventHandlerInstalled = false
     private var eventHandler: EventHandlerRef?
     
     private init() {}
     
     deinit {
+        for (_, ref) in hotKeyRefs {
+            UnregisterEventHotKey(ref)
+        }
         if let handler = eventHandler {
             RemoveEventHandler(handler)
         }
     }
     
     func register(id: UInt32, keyCode: UInt32, modifiers: UInt32, action: @escaping HotKeyAction) {
+        unregister(id: id)
         setupEventHandlerIfNeeded()
         
         let hotKeyID = EventHotKeyID(signature: OSType(0x44534842), id: id) // 'DSHB'
@@ -33,10 +38,19 @@ final class HotKeyManager {
             &hotKeyRef
         )
         
-        if status == noErr {
+        if status == noErr, let ref = hotKeyRef {
             actions[id] = action
+            hotKeyRefs[id] = ref
         } else {
             NSLog("[HotKeyManager] Failed to register hotkey id \(id): error code \(status)")
+        }
+    }
+    
+    func unregister(id: UInt32) {
+        if let ref = hotKeyRefs[id] {
+            UnregisterEventHotKey(ref)
+            hotKeyRefs.removeValue(forKey: id)
+            actions.removeValue(forKey: id)
         }
     }
     

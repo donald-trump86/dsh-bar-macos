@@ -21,40 +21,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupMenu()
         setupHotKeys()
         
+        // Listen for hotkey configuration changes
+        SettingsManager.shared.onHotKeyChanged = { [weak self] in
+            self?.setupHotKeys()
+        }
+        
         ServiceManager.shared.onStatusChanged = { [weak self] running in
             self?.updateUI(running: running)
         }
         
         ServiceManager.shared.startMonitoring()
+        
+        // Auto open web on launch if enabled
+        if SettingsManager.shared.autoOpenWebOnLaunch {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                if ServiceManager.shared.isRunning {
+                    ServiceManager.shared.openBrowser()
+                } else {
+                    ServiceManager.shared.startService { success, _ in
+                        if success {
+                            ServiceManager.shared.openBrowser()
+                        }
+                    }
+                }
+            }
+        }
     }
     
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         guard let button = statusItem.button else { return }
         
-        // Load menu bar icon
-        if let iconImage = loadMenuBarIcon() {
-            button.image = iconImage
-            button.imagePosition = .imageLeft
-        } else {
-            button.title = "DSH"
-        }
-    }
-    
-    private func loadMenuBarIcon() -> NSImage? {
-        // First try MenuBarIcon.png
-        if let path = Bundle.main.path(forResource: "MenuBarIcon", ofType: "png"),
-           let image = NSImage(contentsOfFile: path) {
-            image.size = NSSize(width: 18, height: 18)
-            return image
-        }
-        // Fallback to icon.png resized
-        if let path = Bundle.main.path(forResource: "icon", ofType: "png"),
-           let image = NSImage(contentsOfFile: path) {
-            image.size = NSSize(width: 18, height: 18)
-            return image
-        }
-        return nil
+        // Crisp native whale emoji (no blurry bitmap)
+        button.title = "🐳"
+        button.image = nil
+        button.font = NSFont.systemFont(ofSize: 15)
     }
     
     private func setupMenu() {
@@ -110,9 +111,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         
         menu.addItem(NSMenuItem.separator())
         
-        // 6. Dashboard (⌘D)
+        // 6. Dashboard & Settings (⌘D)
         dashboardMenuItem = NSMenuItem(
-            title: "Show Dashboard Panel...",
+            title: "Dashboard & Preferences...",
             action: #selector(didSelectDashboard),
             keyEquivalent: "d"
         )
@@ -134,7 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         
         // 8. Quit (⌘Q)
         let quitMenuItem = NSMenuItem(
-            title: "Quit DeepSeek Harness Bar",
+            title: "Quit DSH Bar",
             action: #selector(didSelectQuit),
             keyEquivalent: "q"
         )
@@ -146,15 +147,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     private func setupHotKeys() {
-        // HotKey 1: Option + Shift + D (Carbon kVK_ANSI_D = 0x02, cmd/opt/shift masks)
-        // Carbon modifier masks: optionKey = 0x0800, shiftKey = 0x0200
-        let kVK_ANSI_D: UInt32 = 0x02
-        let kVK_ANSI_H: UInt32 = 0x04
-        // Carbon modifier masks: optionKey = 0x0800, shiftKey = 0x0200
-        let optShiftMask: UInt32 = UInt32(0x0800 | 0x0200)
+        let settings = SettingsManager.shared
+        let keyCode = settings.globalHotKeyKeyCode
+        let modifiers = settings.globalHotKeyModifiers
         
-        // ⌥ + ⇧ + D: Global shortcut to open DSH Web
-        HotKeyManager.shared.register(id: 1, keyCode: kVK_ANSI_D, modifiers: optShiftMask) {
+        // Primary Global Shortcut to Open Web / Launch
+        HotKeyManager.shared.register(id: 1, keyCode: keyCode, modifiers: modifiers) {
             if ServiceManager.shared.isRunning {
                 ServiceManager.shared.openBrowser()
             } else {
@@ -166,7 +164,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
-        // ⌥ + ⇧ + H: Global shortcut to toggle Dashboard panel
+        // Secondary Global Shortcut: ⌥ + ⇧ + H to toggle Dashboard
+        let kVK_ANSI_H: UInt32 = 0x04
+        let optShiftMask: UInt32 = UInt32(0x0800 | 0x0200)
         HotKeyManager.shared.register(id: 2, keyCode: kVK_ANSI_H, modifiers: optShiftMask) {
             DashboardWindowController.shared.showWindow(nil)
             NSApplication.shared.activate(ignoringOtherApps: true)
