@@ -26,12 +26,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.setupHotKeys()
         }
         
-        // Listen for port changes
-        SettingsManager.shared.onPortChanged = { [weak self] _ in
+        // Observe port changes: keep the menu bar's port display in sync.
+        SettingsManager.shared.addPortObserver { [weak self] _ in
             self?.updateUI(running: ServiceManager.shared.isRunning)
         }
         
-        ServiceManager.shared.onStatusChanged = { [weak self] running in
+        // Observe service status: refresh the menu bar light, status line and items.
+        ServiceManager.shared.addStatusObserver { [weak self] running in
             self?.updateUI(running: running)
         }
         
@@ -55,21 +56,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        updateMenuBarIndicator(running: ServiceManager.shared.isRunning)
+    }
+    
+    /// Menu bar light: the whale emoji plus a colored status dot
+    /// (green = online, gray = stopped).
+    private func updateMenuBarIndicator(running: Bool) {
         guard let button = statusItem.button else { return }
         
-        // Crisp native whale emoji (no blurry bitmap)
-        button.title = "🐳"
+        let title = NSMutableAttributedString(
+            string: "🐳 ",
+            attributes: [.font: NSFont.systemFont(ofSize: 15)]
+        )
+        title.append(NSAttributedString(
+            string: "●",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 10, weight: .bold),
+                .foregroundColor: running ? NSColor.systemGreen : NSColor.systemGray
+            ]
+        ))
         button.image = nil
-        button.font = NSFont.systemFont(ofSize: 15)
+        button.attributedTitle = title
+    }
+    
+    /// The status line carries a colored dot; the item has no action but stays
+    /// enabled so AppKit does not dim the custom colors.
+    private func updateStatusMenuItem(running: Bool, port: Int) {
+        let title = NSMutableAttributedString(
+            string: running ? "● " : "○ ",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 13, weight: .bold),
+                .foregroundColor: running ? NSColor.systemGreen : NSColor.secondaryLabelColor
+            ]
+        )
+        title.append(NSAttributedString(
+            string: running ? "DeepSeek Harness: Running (\(port))" : "DeepSeek Harness: Stopped (\(port))",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 13),
+                .foregroundColor: NSColor.labelColor
+            ]
+        ))
+        statusMenuItem.attributedTitle = title
     }
     
     private func setupMenu() {
         menu = NSMenu()
         menu.autoenablesItems = false
         
-        // 1. Status display
+        // 1. Status display (kept enabled but inert so the colored dot is not dimmed)
         statusMenuItem = NSMenuItem(title: "Checking status...", action: nil, keyEquivalent: "")
-        statusMenuItem.isEnabled = false
+        statusMenuItem.isEnabled = true
         menu.addItem(statusMenuItem)
         
         menu.addItem(NSMenuItem.separator())
@@ -180,8 +216,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     
     private func updateUI(running: Bool) {
         let port = ServiceManager.shared.port
+        updateMenuBarIndicator(running: running)
+        updateStatusMenuItem(running: running, port: port)
         if running {
-            statusMenuItem.title = "● DeepSeek Harness: Running (\(port))"
             toggleServiceMenuItem.title = "Stop Service"
             toggleServiceMenuItem.isEnabled = true
             openWebMenuItem.isEnabled = true
@@ -189,7 +226,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             copyUrlMenuItem.isEnabled = true
             statusItem.button?.toolTip = "DeepSeek Harness: Running on port \(port)"
         } else {
-            statusMenuItem.title = "○ DeepSeek Harness: Stopped (\(port))"
             toggleServiceMenuItem.title = "Start Service"
             toggleServiceMenuItem.isEnabled = true
             openWebMenuItem.isEnabled = false
@@ -197,7 +233,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             copyUrlMenuItem.isEnabled = false
             statusItem.button?.toolTip = "DeepSeek Harness: Stopped"
         }
-        DashboardWindowController.shared.updateState(running)
     }
     
     @objc private func didSelectOpenWeb() {
@@ -207,15 +242,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func didSelectToggleService() {
         if ServiceManager.shared.isRunning {
             toggleServiceMenuItem.isEnabled = false
-            ServiceManager.shared.stopService { [weak self] _ in
+            ServiceManager.shared.stopService { [weak self] success, message in
                 self?.toggleServiceMenuItem.isEnabled = true
+                if !success, let message = message {
+                    self?.showAlert(title: "Could Not Stop the Service", message: message)
+                }
             }
         } else {
             toggleServiceMenuItem.isEnabled = false
-            ServiceManager.shared.startService { [weak self] success, _ in
+            ServiceManager.shared.startService { [weak self] success, message in
                 self?.toggleServiceMenuItem.isEnabled = true
                 if success {
                     ServiceManager.shared.openBrowser()
+                } else if let message = message {
+                    self?.showAlert(title: "Could Not Start the Service", message: message)
                 }
             }
         }
@@ -223,9 +263,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     
     @objc private func didSelectRestart() {
         restartMenuItem.isEnabled = false
-        ServiceManager.shared.restartService { [weak self] _, _ in
+        ServiceManager.shared.restartService { [weak self] success, message in
             self?.restartMenuItem.isEnabled = true
+            if !success, let message = message {
+                self?.showAlert(title: "Could Not Restart the Service", message: message)
+            }
         }
+    }
+    
+    private func showAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
     
     @objc private func didSelectCopyUrl() {

@@ -13,7 +13,29 @@ final class SettingsManager {
     private let keyPort = "DSH_CustomPort"
     
     var onHotKeyChanged: (() -> Void)?
-    var onPortChanged: ((Int) -> Void)?
+
+    // Port changes are broadcast to every interested component (menu bar and
+    // preferences panel). A single callback slot allowed one component to
+    // silently overwrite another one's closure.
+    private var portObservers: [UUID: (Int) -> Void] = [:]
+
+    @discardableResult
+    func addPortObserver(_ observer: @escaping (Int) -> Void) -> UUID {
+        let token = UUID()
+        portObservers[token] = observer
+        observer(port) // deliver the current value immediately
+        return token
+    }
+
+    func removePortObserver(_ token: UUID) {
+        portObservers.removeValue(forKey: token)
+    }
+
+    private func notifyPortObservers(_ newPort: Int) {
+        for observer in Array(portObservers.values) {
+            observer(newPort)
+        }
+    }
     
     private init() {
         // Defaults
@@ -34,7 +56,7 @@ final class SettingsManager {
         set {
             let clamped = (newValue > 0 && newValue <= 65535) ? newValue : 3080
             UserDefaults.standard.set(clamped, forKey: keyPort)
-            onPortChanged?(clamped)
+            notifyPortObservers(clamped)
         }
     }
     
@@ -73,11 +95,19 @@ final class SettingsManager {
     }
     
     // MARK: - Global HotKey Configuration
-    // Default: Option + Shift + D (keyCode 2)
+    // Default: Option + Shift + D (keyCode 0x02 / kVK_ANSI_D)
+    private static let defaultHotKeyKeyCode: UInt32 = 0x02
+    private static let defaultHotKeyModifiers: UInt32 = 0x0800 | 0x0200 // optionKey | shiftKey
+    private static let defaultHotKeyDisplay = "⌥ ⇧ D"
+    
+    /// `integer(forKey:)` cannot tell "unset" from a stored 0, and 0 is a real key
+    /// code (kVK_ANSI_A) — recording ⌘A/⌥A used to silently fall back to the default.
     var globalHotKeyKeyCode: UInt32 {
         get {
-            let val = UserDefaults.standard.integer(forKey: keyHotKeyKeyCode)
-            return val != 0 ? UInt32(val) : 0x02 // kVK_ANSI_D
+            guard UserDefaults.standard.object(forKey: keyHotKeyKeyCode) != nil else {
+                return Self.defaultHotKeyKeyCode
+            }
+            return UInt32(UserDefaults.standard.integer(forKey: keyHotKeyKeyCode))
         }
         set {
             UserDefaults.standard.set(Int(newValue), forKey: keyHotKeyKeyCode)
@@ -86,8 +116,10 @@ final class SettingsManager {
     
     var globalHotKeyModifiers: UInt32 {
         get {
-            let val = UserDefaults.standard.integer(forKey: keyHotKeyModifiers)
-            return val != 0 ? UInt32(val) : UInt32(0x0800 | 0x0200) // optionKey | shiftKey
+            guard UserDefaults.standard.object(forKey: keyHotKeyModifiers) != nil else {
+                return Self.defaultHotKeyModifiers
+            }
+            return UInt32(UserDefaults.standard.integer(forKey: keyHotKeyModifiers))
         }
         set {
             UserDefaults.standard.set(Int(newValue), forKey: keyHotKeyModifiers)
@@ -96,7 +128,7 @@ final class SettingsManager {
     
     var globalHotKeyDisplayString: String {
         get {
-            return UserDefaults.standard.string(forKey: keyHotKeyTitle) ?? "⌥ ⇧ D"
+            return UserDefaults.standard.string(forKey: keyHotKeyTitle) ?? Self.defaultHotKeyDisplay
         }
         set {
             UserDefaults.standard.set(newValue, forKey: keyHotKeyTitle)
@@ -111,6 +143,10 @@ final class SettingsManager {
     }
     
     func resetHotKeyToDefault() {
-        updateGlobalHotKey(keyCode: 0x02, modifiers: UInt32(0x0800 | 0x0200), display: "⌥ ⇧ D")
+        updateGlobalHotKey(
+            keyCode: Self.defaultHotKeyKeyCode,
+            modifiers: Self.defaultHotKeyModifiers,
+            display: Self.defaultHotKeyDisplay
+        )
     }
 }

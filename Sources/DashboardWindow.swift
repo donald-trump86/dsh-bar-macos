@@ -31,6 +31,8 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     private var localEventMonitor: Any?
     private var isRecordingHotKey = false
     private var copyFeedbackTimer: Timer?
+    private var statusObserverToken: UUID?
+    private var portObserverToken: UUID?
     
     init() {
         let window = NSWindow(
@@ -49,19 +51,26 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         
         super.init(window: window)
         setupUI()
-        updateState(ServiceManager.shared.isRunning)
         
-        ServiceManager.shared.onStatusChanged = { [weak self] running in
+        // Subscribe independently: the panel and the menu bar each receive every
+        // status/port change. Previously these were single callback slots, so the
+        // panel overwrote the menu bar's closure and the menu went stale.
+        statusObserverToken = ServiceManager.shared.addStatusObserver { [weak self] running in
             self?.updateState(running)
         }
-        
-        SettingsManager.shared.onPortChanged = { [weak self] port in
+        portObserverToken = SettingsManager.shared.addPortObserver { [weak self] port in
             self?.updateUrlDisplay(port: port)
         }
     }
     
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+    
+    override func showWindow(_ sender: Any?) {
+        // Always reflect the latest state when the panel is brought up.
+        updateState(ServiceManager.shared.isRunning)
+        super.showWindow(sender)
     }
     
     private func setupUI() {
@@ -336,15 +345,20 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     @objc private func didClickToggle() {
         if ServiceManager.shared.isRunning {
             toggleButton.isEnabled = false
-            ServiceManager.shared.stopService { [weak self] _ in
+            ServiceManager.shared.stopService { [weak self] success, message in
                 self?.toggleButton.isEnabled = true
+                if !success, let message = message {
+                    self?.showAlert(title: "Could Not Stop the Service", message: message)
+                }
             }
         } else {
             toggleButton.isEnabled = false
-            ServiceManager.shared.startService { [weak self] success, _ in
+            ServiceManager.shared.startService { [weak self] success, message in
                 self?.toggleButton.isEnabled = true
                 if success {
                     ServiceManager.shared.openBrowser()
+                } else if let message = message {
+                    self?.showAlert(title: "Could Not Start the Service", message: message)
                 }
             }
         }
@@ -352,9 +366,22 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     
     @objc private func didClickRestart() {
         restartButton.isEnabled = false
-        ServiceManager.shared.restartService { [weak self] _, _ in
+        ServiceManager.shared.restartService { [weak self] success, message in
             self?.restartButton.isEnabled = true
+            if !success, let message = message {
+                self?.showAlert(title: "Could Not Restart the Service", message: message)
+            }
         }
+    }
+    
+    private func showAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
     
     @objc private func didClickLogs() {
