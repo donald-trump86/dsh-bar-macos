@@ -26,6 +26,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.setupHotKeys()
         }
         
+        // Listen for port changes
+        SettingsManager.shared.onPortChanged = { [weak self] _ in
+            self?.updateUI(running: ServiceManager.shared.isRunning)
+        }
+        
         ServiceManager.shared.onStatusChanged = { [weak self] running in
             self?.updateUI(running: running)
         }
@@ -111,11 +116,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         
         menu.addItem(NSMenuItem.separator())
         
-        // 6. Dashboard & Settings (⌘D)
+        // 6. Preferences (⌘,) - macOS standard shortcut
         dashboardMenuItem = NSMenuItem(
-            title: "Dashboard & Preferences...",
+            title: "Preferences...",
             action: #selector(didSelectDashboard),
-            keyEquivalent: "d"
+            keyEquivalent: ","
         )
         dashboardMenuItem.keyEquivalentModifierMask = [.command]
         dashboardMenuItem.target = self
@@ -164,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
-        // Secondary Global Shortcut: ⌥ + ⇧ + H to toggle Dashboard
+        // Secondary Global Shortcut: ⌥ + ⇧ + H to toggle Preferences
         let kVK_ANSI_H: UInt32 = 0x04
         let optShiftMask: UInt32 = UInt32(0x0800 | 0x0200)
         HotKeyManager.shared.register(id: 2, keyCode: kVK_ANSI_H, modifiers: optShiftMask) {
@@ -174,16 +179,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     private func updateUI(running: Bool) {
+        let port = ServiceManager.shared.port
         if running {
-            statusMenuItem.title = "● DeepSeek Harness: Running (3080)"
+            statusMenuItem.title = "● DeepSeek Harness: Running (\(port))"
             toggleServiceMenuItem.title = "Stop Service"
             toggleServiceMenuItem.isEnabled = true
             openWebMenuItem.isEnabled = true
             restartMenuItem.isEnabled = true
             copyUrlMenuItem.isEnabled = true
-            statusItem.button?.toolTip = "DeepSeek Harness: Running on port 3080"
+            statusItem.button?.toolTip = "DeepSeek Harness: Running on port \(port)"
         } else {
-            statusMenuItem.title = "○ DeepSeek Harness: Stopped"
+            statusMenuItem.title = "○ DeepSeek Harness: Stopped (\(port))"
             toggleServiceMenuItem.title = "Start Service"
             toggleServiceMenuItem.isEnabled = true
             openWebMenuItem.isEnabled = false

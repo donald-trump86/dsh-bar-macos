@@ -10,13 +10,31 @@ final class SettingsManager {
     private let keyHotKeyKeyCode = "DSH_GlobalHotKeyKeyCode"
     private let keyHotKeyModifiers = "DSH_GlobalHotKeyModifiers"
     private let keyHotKeyTitle = "DSH_GlobalHotKeyTitle"
+    private let keyPort = "DSH_CustomPort"
     
     var onHotKeyChanged: (() -> Void)?
+    var onPortChanged: ((Int) -> Void)?
     
     private init() {
         // Defaults
         if UserDefaults.standard.object(forKey: keyAutoOpen) == nil {
             UserDefaults.standard.set(true, forKey: keyAutoOpen)
+        }
+        if UserDefaults.standard.object(forKey: keyPort) == nil {
+            UserDefaults.standard.set(3080, forKey: keyPort)
+        }
+    }
+    
+    // MARK: - Port Configuration
+    var port: Int {
+        get {
+            let val = UserDefaults.standard.integer(forKey: keyPort)
+            return (val > 0 && val <= 65535) ? val : 3080
+        }
+        set {
+            let clamped = (newValue > 0 && newValue <= 65535) ? newValue : 3080
+            UserDefaults.standard.set(clamped, forKey: keyPort)
+            onPortChanged?(clamped)
         }
     }
     

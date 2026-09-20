@@ -4,7 +4,10 @@ import AppKit
 final class ServiceManager {
     static let shared = ServiceManager()
     
-    let port: Int = 3080
+    var port: Int {
+        return SettingsManager.shared.port
+    }
+    
     var baseUrl: URL {
         return URL(string: "http://127.0.0.1:\(port)")!
     }
@@ -20,6 +23,10 @@ final class ServiceManager {
         config.timeoutIntervalForRequest = 1.0
         config.timeoutIntervalForResource = 1.0
         self.session = URLSession(configuration: config)
+        
+        SettingsManager.shared.onPortChanged = { [weak self] _ in
+            self?.checkStatus()
+        }
     }
     
     func startMonitoring(interval: TimeInterval = 2.0) {
@@ -42,7 +49,7 @@ final class ServiceManager {
         let task = session.dataTask(with: request) { [weak self] _, response, error in
             let running: Bool
             if let httpResponse = response as? HTTPURLResponse {
-                // Any response from 127.0.0.1:3080 (including 401 Unauthorized) means Harness server is running
+                // Any response from 127.0.0.1:<port> (including 401 Unauthorized) means Harness server is running
                 running = (httpResponse.statusCode > 0)
             } else {
                 running = false
@@ -116,6 +123,9 @@ final class ServiceManager {
             FileManager.default.createFile(atPath: logPath, contents: nil)
         }
         
+        let currentPort = self.port
+        let portArg = (currentPort == 3080) ? "" : "--port \(currentPort)"
+        
         // Launch in background
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
@@ -128,7 +138,7 @@ final class ServiceManager {
             export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.local/bin:$PATH"
             export LANG="en_US.UTF-8"
             export LC_ALL="en_US.UTF-8"
-            nohup "\(dshPath)" web >> "\(logPath)" 2>&1 &
+            nohup "\(dshPath)" web \(portArg) >> "\(logPath)" 2>&1 &
             """
             process.arguments = ["-c", script]
             
@@ -163,20 +173,21 @@ final class ServiceManager {
                 if ready {
                     completion(true, nil)
                 } else {
-                    completion(false, "Service started but timed out waiting for port \(self.port) to respond.")
+                    completion(false, "Service started but timed out waiting for port \(currentPort) to respond.")
                 }
             }
         }
     }
     
     func stopService(completion: @escaping (Bool) -> Void) {
+        let currentPort = self.port
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/bash")
-            // Kill any process listening on port 3080
-            let script = "PIDS=$(lsof -ti :\(self.port) 2>/dev/null || true); if [ -n \"$PIDS\" ]; then kill $PIDS 2>/dev/null || true; fi"
+            // Kill any process listening on the current port
+            let script = "PIDS=$(lsof -ti :\(currentPort) 2>/dev/null || true); if [ -n \"$PIDS\" ]; then kill $PIDS 2>/dev/null || true; fi"
             process.arguments = ["-c", script]
             try? process.run()
             process.waitUntilExit()
@@ -205,7 +216,6 @@ final class ServiceManager {
         if FileManager.default.fileExists(atPath: logPath) {
             NSWorkspace.shared.open(logFileURL)
         } else {
-            // Open Console app
             if let consoleApp = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Console") {
                 NSWorkspace.shared.openApplication(at: consoleApp, configuration: NSWorkspace.OpenConfiguration())
             }
