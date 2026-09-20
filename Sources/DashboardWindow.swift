@@ -5,25 +5,36 @@ import ServiceManagement
 final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     static let shared = DashboardWindowController()
     
-    private let statusIndicator = NSTextField(labelWithString: "● Stopped")
+    // Status Badge UI
+    private let statusBadge = NSBox()
+    private let statusDot = NSBox()
+    private let statusText = NSTextField(labelWithString: "STOPPED")
+    
+    // URL Bar UI
     private let urlLabel = NSTextField(labelWithString: "http://127.0.0.1:3080")
-    private let toggleButton = NSButton()
+    private let copyButton = NSButton()
+    
+    // Action Buttons
     private let openButton = NSButton()
+    private let toggleButton = NSButton()
     private let restartButton = NSButton()
     private let logsButton = NSButton()
     
     // Preferences UI
     private let portField = NSTextField()
-    private let applyPortButton = NSButton(title: "Set", target: nil, action: nil)
-    private let launchAtLoginCheckbox = NSButton(checkboxWithTitle: "Launch at login (开机自动启动)", target: nil, action: nil)
-    private let autoOpenCheckbox = NSButton(checkboxWithTitle: "Auto open Web UI on launch (启动时自动打开网页)", target: nil, action: nil)
+    private let portResetButton = NSButton()
+    private let launchAtLoginCheckbox = NSButton(checkboxWithTitle: "Launch at login (开机自动在后台启动)", target: nil, action: nil)
+    private let autoOpenCheckbox = NSButton(checkboxWithTitle: "Auto open Web on launch (启动时自动拉起网页)", target: nil, action: nil)
     private let hotKeyButton = NSButton()
+    private let hotKeyResetButton = NSButton()
+    
     private var localEventMonitor: Any?
     private var isRecordingHotKey = false
+    private var copyFeedbackTimer: Timer?
     
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 530),
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 580),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -56,7 +67,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     private func setupUI() {
         guard let window = self.window else { return }
         
-        // Visual effect background (vibrancy / blur)
+        // 1. Frosted Glass Vibrancy Background
         let visualEffect = NSVisualEffectView(frame: window.contentView!.bounds)
         visualEffect.autoresizingMask = [.width, .height]
         visualEffect.material = .hudWindow
@@ -64,8 +75,10 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         visualEffect.state = .active
         window.contentView = visualEffect
         
-        // 1. App Icon (64x64)
-        let iconView = NSImageView(frame: NSRect(x: 24, y: 440, width: 64, height: 64))
+        // ==========================================
+        // 2. HERO HEADER SECTION
+        // ==========================================
+        let iconView = NSImageView(frame: NSRect(x: 28, y: 486, width: 68, height: 68))
         if let iconPath = Bundle.main.path(forResource: "icon", ofType: "png"),
            let icon = NSImage(contentsOfFile: iconPath) {
             iconView.image = icon
@@ -74,158 +87,214 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         }
         visualEffect.addSubview(iconView)
         
-        // 2. App Title & Status
+        // Title & Version
         let titleLabel = NSTextField(labelWithString: "DeepSeek Harness")
-        titleLabel.font = NSFont.systemFont(ofSize: 18, weight: .bold)
-        titleLabel.frame = NSRect(x: 104, y: 472, width: 300, height: 26)
+        titleLabel.font = NSFont.systemFont(ofSize: 20, weight: .bold)
+        titleLabel.frame = NSRect(x: 110, y: 524, width: 230, height: 26)
         visualEffect.addSubview(titleLabel)
         
-        statusIndicator.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
-        statusIndicator.frame = NSRect(x: 104, y: 448, width: 300, height: 20)
-        visualEffect.addSubview(statusIndicator)
+        let subTitleLabel = NSTextField(labelWithString: "Menu Bar Companion • v1.0.0")
+        subTitleLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        subTitleLabel.textColor = .secondaryLabelColor
+        subTitleLabel.frame = NSRect(x: 110, y: 504, width: 230, height: 18)
+        visualEffect.addSubview(subTitleLabel)
         
-        // 3. URL Box
-        let urlBox = NSBox(frame: NSRect(x: 24, y: 384, width: 392, height: 44))
-        urlBox.boxType = .custom
-        urlBox.cornerRadius = 8
-        urlBox.fillColor = NSColor.textColor.withAlphaComponent(0.06)
-        urlBox.borderColor = NSColor.separatorColor.withAlphaComponent(0.25)
-        urlBox.borderWidth = 1
+        // Status Badge Capsule (Top Right)
+        statusBadge.frame = NSRect(x: 310, y: 508, width: 142, height: 28)
+        statusBadge.boxType = .custom
+        statusBadge.cornerRadius = 14
+        statusBadge.borderWidth = 1
         
-        urlLabel.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
-        urlLabel.textColor = .secondaryLabelColor
-        urlLabel.frame = NSRect(x: 12, y: 12, width: 280, height: 20)
-        urlBox.addSubview(urlLabel)
+        // Inner Dot inside status badge
+        statusDot.frame = NSRect(x: 10, y: 9, width: 10, height: 10)
+        statusDot.boxType = .custom
+        statusDot.cornerRadius = 5
+        statusDot.borderWidth = 0
+        statusBadge.addSubview(statusDot)
         
-        let copyButton = NSButton(title: "Copy", target: self, action: #selector(didClickCopy))
+        statusText.frame = NSRect(x: 26, y: 5, width: 110, height: 18)
+        statusText.font = NSFont.systemFont(ofSize: 11, weight: .bold)
+        statusBadge.addSubview(statusText)
+        visualEffect.addSubview(statusBadge)
+        
+        // ==========================================
+        // 3. CARD 1: SERVICE CONTROL PANEL
+        // ==========================================
+        let card1 = createCardBox(frame: NSRect(x: 24, y: 340, width: 432, height: 132))
+        visualEffect.addSubview(card1)
+        
+        let card1Title = NSTextField(labelWithString: "LOCAL WEB CONSOLE")
+        card1Title.font = NSFont.systemFont(ofSize: 11, weight: .bold)
+        card1Title.textColor = .tertiaryLabelColor
+        card1Title.frame = NSRect(x: 16, y: 104, width: 300, height: 16)
+        card1.addSubview(card1Title)
+        
+        // URL Inner Container Bar
+        let urlContainer = NSBox(frame: NSRect(x: 14, y: 58, width: 404, height: 38))
+        urlContainer.boxType = .custom
+        urlContainer.cornerRadius = 8
+        urlContainer.fillColor = NSColor.textColor.withAlphaComponent(0.06)
+        urlContainer.borderColor = NSColor.separatorColor.withAlphaComponent(0.2)
+        urlContainer.borderWidth = 1
+        
+        urlLabel.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .medium)
+        urlLabel.textColor = .labelColor
+        urlLabel.frame = NSRect(x: 14, y: 10, width: 280, height: 18)
+        urlContainer.addSubview(urlLabel)
+        
+        copyButton.title = "Copy"
         copyButton.bezelStyle = .inline
-        copyButton.frame = NSRect(x: 312, y: 9, width: 68, height: 26)
-        urlBox.addSubview(copyButton)
-        visualEffect.addSubview(urlBox)
+        copyButton.target = self
+        copyButton.action = #selector(didClickCopy)
+        copyButton.frame = NSRect(x: 324, y: 7, width: 70, height: 24)
+        urlContainer.addSubview(copyButton)
+        card1.addSubview(urlContainer)
         
-        // 4. Action Buttons Row
+        // Action Buttons Row (3 buttons)
         openButton.title = "Open Web"
         openButton.bezelStyle = .rounded
         openButton.keyEquivalent = "\r"
         openButton.target = self
         openButton.action = #selector(didClickOpen)
-        openButton.frame = NSRect(x: 22, y: 336, width: 122, height: 32)
-        visualEffect.addSubview(openButton)
+        openButton.frame = NSRect(x: 10, y: 10, width: 136, height: 36)
+        card1.addSubview(openButton)
         
         toggleButton.bezelStyle = .rounded
         toggleButton.target = self
         toggleButton.action = #selector(didClickToggle)
-        toggleButton.frame = NSRect(x: 154, y: 336, width: 132, height: 32)
-        visualEffect.addSubview(toggleButton)
+        toggleButton.frame = NSRect(x: 148, y: 10, width: 140, height: 36)
+        card1.addSubview(toggleButton)
         
         restartButton.title = "Restart"
         restartButton.bezelStyle = .rounded
         restartButton.target = self
         restartButton.action = #selector(didClickRestart)
-        restartButton.frame = NSRect(x: 294, y: 336, width: 124, height: 32)
-        visualEffect.addSubview(restartButton)
+        restartButton.frame = NSRect(x: 290, y: 10, width: 132, height: 36)
+        card1.addSubview(restartButton)
         
-        // Divider 1
-        let divider1 = NSBox(frame: NSRect(x: 24, y: 320, width: 392, height: 1))
-        divider1.boxType = .separator
-        visualEffect.addSubview(divider1)
+        // ==========================================
+        // 4. CARD 2: PREFERENCES & SHORTCUTS
+        // ==========================================
+        let card2 = createCardBox(frame: NSRect(x: 24, y: 74, width: 432, height: 252))
+        visualEffect.addSubview(card2)
         
-        // 5. Preferences & Settings Section
-        let prefHeader = NSTextField(labelWithString: "PREFERENCES & SHORTCUTS (⌘,)")
-        prefHeader.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
-        prefHeader.textColor = .secondaryLabelColor
-        prefHeader.frame = NSRect(x: 24, y: 294, width: 392, height: 16)
-        visualEffect.addSubview(prefHeader)
+        let card2Title = NSTextField(labelWithString: "PREFERENCES & CONFIGURATION")
+        card2Title.font = NSFont.systemFont(ofSize: 11, weight: .bold)
+        card2Title.textColor = .tertiaryLabelColor
+        card2Title.frame = NSRect(x: 16, y: 224, width: 300, height: 16)
+        card2.addSubview(card2Title)
         
-        // Custom Port Row
-        let portLabel = NSTextField(labelWithString: "Web Server Port:")
-        portLabel.font = NSFont.systemFont(ofSize: 13, weight: .regular)
-        portLabel.frame = NSRect(x: 24, y: 260, width: 130, height: 22)
-        visualEffect.addSubview(portLabel)
+        // --- Row 1: Port Setting ---
+        let portTitle = NSTextField(labelWithString: "Server Port")
+        portTitle.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        portTitle.frame = NSRect(x: 16, y: 190, width: 100, height: 18)
+        card2.addSubview(portTitle)
+        
+        let portDesc = NSTextField(labelWithString: "Standard: 3080")
+        portDesc.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        portDesc.textColor = .secondaryLabelColor
+        portDesc.frame = NSRect(x: 16, y: 172, width: 140, height: 16)
+        card2.addSubview(portDesc)
         
         portField.stringValue = "\(SettingsManager.shared.port)"
-        portField.frame = NSRect(x: 160, y: 258, width: 80, height: 24)
-        portField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
+        portField.frame = NSRect(x: 270, y: 178, width: 72, height: 26)
+        portField.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .medium)
         portField.alignment = .center
         portField.delegate = self
-        visualEffect.addSubview(portField)
+        card2.addSubview(portField)
         
-        applyPortButton.bezelStyle = .inline
-        applyPortButton.frame = NSRect(x: 248, y: 258, width: 60, height: 24)
-        applyPortButton.target = self
-        applyPortButton.action = #selector(didApplyPort)
-        visualEffect.addSubview(applyPortButton)
+        portResetButton.title = "Default"
+        portResetButton.bezelStyle = .inline
+        portResetButton.target = self
+        portResetButton.action = #selector(didResetPort)
+        portResetButton.frame = NSRect(x: 350, y: 180, width: 66, height: 24)
+        card2.addSubview(portResetButton)
         
-        let portDefaultButton = NSButton(title: "Default", target: self, action: #selector(didResetPort))
-        portDefaultButton.bezelStyle = .inline
-        portDefaultButton.frame = NSRect(x: 314, y: 258, width: 65, height: 24)
-        visualEffect.addSubview(portDefaultButton)
+        let sep1 = createCardSeparator(y: 160, width: 400)
+        card2.addSubview(sep1)
         
-        // HotKey Setting Row
-        let hotKeyLabel = NSTextField(labelWithString: "Global Web Hotkey:")
-        hotKeyLabel.font = NSFont.systemFont(ofSize: 13, weight: .regular)
-        hotKeyLabel.frame = NSRect(x: 24, y: 218, width: 130, height: 22)
-        visualEffect.addSubview(hotKeyLabel)
+        // --- Row 2: Global Hotkey ---
+        let hotKeyTitle = NSTextField(labelWithString: "Global Shortcut")
+        hotKeyTitle.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        hotKeyTitle.frame = NSRect(x: 16, y: 126, width: 120, height: 18)
+        card2.addSubview(hotKeyTitle)
+        
+        let hotKeyDesc = NSTextField(labelWithString: "Press anywhere to launch Web")
+        hotKeyDesc.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        hotKeyDesc.textColor = .secondaryLabelColor
+        hotKeyDesc.frame = NSRect(x: 16, y: 108, width: 180, height: 16)
+        card2.addSubview(hotKeyDesc)
         
         hotKeyButton.bezelStyle = .rounded
         hotKeyButton.title = SettingsManager.shared.globalHotKeyDisplayString
         hotKeyButton.target = self
         hotKeyButton.action = #selector(didClickRecordHotKey)
-        hotKeyButton.frame = NSRect(x: 160, y: 212, width: 148, height: 32)
-        visualEffect.addSubview(hotKeyButton)
+        hotKeyButton.frame = NSRect(x: 236, y: 112, width: 116, height: 32)
+        card2.addSubview(hotKeyButton)
         
-        let resetHotKeyButton = NSButton(title: "Reset", target: self, action: #selector(didClickResetHotKey))
-        resetHotKeyButton.bezelStyle = .inline
-        resetHotKeyButton.frame = NSRect(x: 318, y: 216, width: 60, height: 24)
-        visualEffect.addSubview(resetHotKeyButton)
+        hotKeyResetButton.title = "Reset"
+        hotKeyResetButton.bezelStyle = .inline
+        hotKeyResetButton.target = self
+        hotKeyResetButton.action = #selector(didClickResetHotKey)
+        hotKeyResetButton.frame = NSRect(x: 356, y: 116, width: 60, height: 24)
+        card2.addSubview(hotKeyResetButton)
         
-        let hotKeyHint = NSTextField(labelWithString: "Click button then press custom shortcut (e.g. ⌃⌥D)")
-        hotKeyHint.font = NSFont.systemFont(ofSize: 10, weight: .regular)
-        hotKeyHint.textColor = .tertiaryLabelColor
-        hotKeyHint.frame = NSRect(x: 24, y: 194, width: 392, height: 14)
-        visualEffect.addSubview(hotKeyHint)
+        let sep2 = createCardSeparator(y: 98, width: 400)
+        card2.addSubview(sep2)
         
-        // Launch at login checkbox
-        launchAtLoginCheckbox.frame = NSRect(x: 24, y: 160, width: 392, height: 22)
+        // --- Row 3: Checkboxes ---
+        launchAtLoginCheckbox.frame = NSRect(x: 16, y: 62, width: 390, height: 20)
         launchAtLoginCheckbox.state = SettingsManager.shared.isLaunchAtLoginEnabled ? .on : .off
         launchAtLoginCheckbox.target = self
         launchAtLoginCheckbox.action = #selector(didToggleLaunchAtLogin)
-        visualEffect.addSubview(launchAtLoginCheckbox)
+        card2.addSubview(launchAtLoginCheckbox)
         
-        // Auto open web checkbox
-        autoOpenCheckbox.frame = NSRect(x: 24, y: 130, width: 392, height: 22)
+        autoOpenCheckbox.frame = NSRect(x: 16, y: 28, width: 390, height: 20)
         autoOpenCheckbox.state = SettingsManager.shared.autoOpenWebOnLaunch ? .on : .off
         autoOpenCheckbox.target = self
         autoOpenCheckbox.action = #selector(didToggleAutoOpen)
-        visualEffect.addSubview(autoOpenCheckbox)
+        card2.addSubview(autoOpenCheckbox)
         
-        // HotKey tips
-        let tipsLabel = NSTextField(labelWithString: "Standard Shortcuts: ⌘, (Preferences)  ⌘O (Open)  ⌘S (Stop/Start)  ⌘R (Restart)")
-        tipsLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
-        tipsLabel.textColor = .secondaryLabelColor
-        tipsLabel.frame = NSRect(x: 24, y: 92, width: 392, height: 18)
-        visualEffect.addSubview(tipsLabel)
-        
-        // Divider 2
-        let divider2 = NSBox(frame: NSRect(x: 24, y: 76, width: 392, height: 1))
-        divider2.boxType = .separator
-        visualEffect.addSubview(divider2)
-        
-        // 6. Bottom row: View Logs & Close
+        // ==========================================
+        // 5. BOTTOM FOOTER BAR
+        // ==========================================
         logsButton.title = "View Live Logs"
         logsButton.bezelStyle = .accessoryBarAction
         logsButton.target = self
         logsButton.action = #selector(didClickLogs)
-        logsButton.frame = NSRect(x: 24, y: 24, width: 110, height: 28)
+        logsButton.frame = NSRect(x: 24, y: 22, width: 116, height: 30)
         visualEffect.addSubview(logsButton)
+        
+        let tipLabel = NSTextField(labelWithString: "Preferences: ⌘,  •  Close: Esc")
+        tipLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        tipLabel.textColor = .tertiaryLabelColor
+        tipLabel.alignment = .right
+        tipLabel.frame = NSRect(x: 160, y: 28, width: 210, height: 18)
+        visualEffect.addSubview(tipLabel)
         
         let closeButton = NSButton(title: "Done", target: self, action: #selector(didClickClose))
         closeButton.bezelStyle = .accessoryBarAction
         closeButton.keyEquivalent = "\u{1b}" // ESC
-        closeButton.frame = NSRect(x: 346, y: 24, width: 70, height: 28)
+        closeButton.frame = NSRect(x: 382, y: 22, width: 74, height: 30)
         visualEffect.addSubview(closeButton)
         
         updateUrlDisplay(port: SettingsManager.shared.port)
+    }
+    
+    private func createCardBox(frame: NSRect) -> NSBox {
+        let box = NSBox(frame: frame)
+        box.boxType = .custom
+        box.cornerRadius = 12
+        box.fillColor = NSColor.textColor.withAlphaComponent(0.04)
+        box.borderColor = NSColor.separatorColor.withAlphaComponent(0.2)
+        box.borderWidth = 1
+        return box
+    }
+    
+    private func createCardSeparator(y: CGFloat, width: CGFloat) -> NSBox {
+        let sep = NSBox(frame: NSRect(x: 16, y: y, width: width, height: 1))
+        sep.boxType = .separator
+        return sep
     }
     
     private func updateUrlDisplay(port: Int) {
@@ -236,14 +305,22 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     func updateState(_ isRunning: Bool) {
         let port = ServiceManager.shared.port
         if isRunning {
-            statusIndicator.stringValue = "● Running (Port \(port))"
-            statusIndicator.textColor = NSColor.systemGreen
+            statusBadge.fillColor = NSColor.systemGreen.withAlphaComponent(0.15)
+            statusBadge.borderColor = NSColor.systemGreen.withAlphaComponent(0.4)
+            statusDot.fillColor = NSColor.systemGreen
+            statusText.stringValue = "RUNNING : \(port)"
+            statusText.textColor = NSColor.systemGreen
+            
             toggleButton.title = "Stop Service"
             openButton.isEnabled = true
             restartButton.isEnabled = true
         } else {
-            statusIndicator.stringValue = "○ Stopped"
-            statusIndicator.textColor = NSColor.secondaryLabelColor
+            statusBadge.fillColor = NSColor.textColor.withAlphaComponent(0.08)
+            statusBadge.borderColor = NSColor.separatorColor.withAlphaComponent(0.3)
+            statusDot.fillColor = NSColor.tertiaryLabelColor
+            statusText.stringValue = "STOPPED"
+            statusText.textColor = NSColor.secondaryLabelColor
+            
             toggleButton.title = "Start Service"
             openButton.isEnabled = false
             restartButton.isEnabled = false
@@ -251,22 +328,68 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         updateUrlDisplay(port: port)
     }
     
+    // MARK: - Actions
+    @objc private func didClickOpen() {
+        ServiceManager.shared.openBrowser()
+    }
+    
+    @objc private func didClickToggle() {
+        if ServiceManager.shared.isRunning {
+            toggleButton.isEnabled = false
+            ServiceManager.shared.stopService { [weak self] _ in
+                self?.toggleButton.isEnabled = true
+            }
+        } else {
+            toggleButton.isEnabled = false
+            ServiceManager.shared.startService { [weak self] success, _ in
+                self?.toggleButton.isEnabled = true
+                if success {
+                    ServiceManager.shared.openBrowser()
+                }
+            }
+        }
+    }
+    
+    @objc private func didClickRestart() {
+        restartButton.isEnabled = false
+        ServiceManager.shared.restartService { [weak self] _, _ in
+            self?.restartButton.isEnabled = true
+        }
+    }
+    
+    @objc private func didClickLogs() {
+        ServiceManager.shared.openLogs()
+    }
+    
+    @objc private func didClickCopy() {
+        ServiceManager.shared.copyURLToClipboard()
+        copyButton.title = "Copied!"
+        copyButton.isEnabled = false
+        copyFeedbackTimer?.invalidate()
+        copyFeedbackTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
+            self?.copyButton.title = "Copy"
+            self?.copyButton.isEnabled = true
+        }
+    }
+    
     // MARK: - Port Actions
-    @objc private func didApplyPort() {
+    private func applyCurrentPort() {
         let text = portField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if let newPort = Int(text), newPort > 0, newPort <= 65535 {
-            SettingsManager.shared.port = newPort
-            updateUrlDisplay(port: newPort)
-            
-            if ServiceManager.shared.isRunning {
-                let alert = NSAlert()
-                alert.messageText = "Port Updated to \(newPort)"
-                alert.informativeText = "The server is currently running. Would you like to restart the service on the new port now?"
-                alert.alertStyle = .informational
-                alert.addButton(withTitle: "Restart Now")
-                alert.addButton(withTitle: "Later")
-                if alert.runModal() == .alertFirstButtonReturn {
-                    didClickRestart()
+            if newPort != SettingsManager.shared.port {
+                SettingsManager.shared.port = newPort
+                updateUrlDisplay(port: newPort)
+                
+                if ServiceManager.shared.isRunning {
+                    let alert = NSAlert()
+                    alert.messageText = "Port Updated to \(newPort)"
+                    alert.informativeText = "The server is currently running. Would you like to restart the service on the new port now?"
+                    alert.alertStyle = .informational
+                    alert.addButton(withTitle: "Restart Now")
+                    alert.addButton(withTitle: "Later")
+                    if alert.runModal() == .alertFirstButtonReturn {
+                        didClickRestart()
+                    }
                 }
             }
         } else {
@@ -275,16 +398,12 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     }
     
     @objc private func didResetPort() {
-        SettingsManager.shared.port = 3080
-        updateUrlDisplay(port: 3080)
-        if ServiceManager.shared.isRunning {
-            didClickRestart()
-        }
+        portField.stringValue = "3080"
+        applyCurrentPort()
     }
     
-    func control(_ control: NSControl, textShouldEndEditing fieldEditor: NSText) -> Bool {
-        didApplyPort()
-        return true
+    func controlTextDidEndEditing(_ obj: Notification) {
+        applyCurrentPort()
     }
     
     // MARK: - HotKey Recording
@@ -295,7 +414,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         }
         
         isRecordingHotKey = true
-        hotKeyButton.title = "Press Keys..."
+        hotKeyButton.title = "Recording..."
         hotKeyButton.highlight(true)
         
         localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
@@ -372,43 +491,6 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     @objc private func didToggleAutoOpen() {
         let enabled = (autoOpenCheckbox.state == .on)
         SettingsManager.shared.autoOpenWebOnLaunch = enabled
-    }
-    
-    // MARK: - Service Actions
-    @objc private func didClickOpen() {
-        ServiceManager.shared.openBrowser()
-    }
-    
-    @objc private func didClickToggle() {
-        if ServiceManager.shared.isRunning {
-            toggleButton.isEnabled = false
-            ServiceManager.shared.stopService { [weak self] _ in
-                self?.toggleButton.isEnabled = true
-            }
-        } else {
-            toggleButton.isEnabled = false
-            ServiceManager.shared.startService { [weak self] success, _ in
-                self?.toggleButton.isEnabled = true
-                if success {
-                    ServiceManager.shared.openBrowser()
-                }
-            }
-        }
-    }
-    
-    @objc private func didClickRestart() {
-        restartButton.isEnabled = false
-        ServiceManager.shared.restartService { [weak self] _, _ in
-            self?.restartButton.isEnabled = true
-        }
-    }
-    
-    @objc private func didClickLogs() {
-        ServiceManager.shared.openLogs()
-    }
-    
-    @objc private func didClickCopy() {
-        ServiceManager.shared.copyURLToClipboard()
     }
     
     @objc private func didClickClose() {
