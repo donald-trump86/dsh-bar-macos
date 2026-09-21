@@ -244,23 +244,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateStatusItems(snapshot: snapshot)
 
         let busy = snapshot.phase.isBusy || snapshot.phase == .checking
-        // DSH Bar only drives a service it started itself; an external Harness
-        // is surfaced but its Stop/Restart entries stay disabled.
-        let runningButForeign = snapshot.isRunning && !snapshot.isManaged
-        toggleServiceMenuItem.isEnabled = !busy && !runningButForeign
-        restartMenuItem.isEnabled = snapshot.isRunning && !busy && snapshot.isManaged
+        // An externally started Harness stays controllable, but the menu labels
+        // say so and the action asks for confirmation naming the process.
+        let externallyStarted = snapshot.isRunning && !snapshot.isManaged
+        toggleServiceMenuItem.isEnabled = !busy
+        restartMenuItem.isEnabled = snapshot.isRunning && !busy
         openWebMenuItem.isEnabled = snapshot.isRunning
         copyUrlMenuItem.isEnabled = snapshot.isRunning
 
         switch snapshot.phase {
-        case .running where snapshot.isManaged:
-            toggleServiceMenuItem.title = "Stop Service"
+        case .running where externallyStarted:
+            toggleServiceMenuItem.title = "Stop External Service…"
+            restartMenuItem.title = "Adopt & Restart Service…"
         case .running:
-            toggleServiceMenuItem.title = "Not Managed by DSH Bar"
+            toggleServiceMenuItem.title = "Stop Service"
+            restartMenuItem.title = "Restart Service"
         case .portConflict, .error:
             toggleServiceMenuItem.title = "Retry Start"
+            restartMenuItem.title = "Restart Service"
         default:
             toggleServiceMenuItem.title = "Start Service"
+            restartMenuItem.title = "Restart Service"
         }
 
         statusItem.button?.toolTip = statusTitle(for: snapshot)
@@ -273,6 +277,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func didSelectToggleService() {
         let snapshot = ServiceManager.shared.snapshot
         if snapshot.isRunning {
+            if ServiceManager.shared.hasUnmanagedService, let pid = snapshot.pid {
+                ExternalServicePrompt.confirm(action: .stop) { [weak self] confirmed in
+                    guard confirmed else { return }
+                    ServiceManager.shared.stopUnmanagedService(pid: pid) { [weak self] success, message in
+                        if !success, let message {
+                            self?.showAlert(title: "Could Not Stop the External Service", message: message)
+                        }
+                    }
+                }
+                return
+            }
             ServiceManager.shared.stopService { [weak self] success, message in
                 if !success, let message {
                     self?.showAlert(title: "Could Not Stop the Service", message: message)
@@ -288,6 +303,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func didSelectRestart() {
+        let snapshot = ServiceManager.shared.snapshot
+        if ServiceManager.shared.hasUnmanagedService, let pid = snapshot.pid {
+            ExternalServicePrompt.confirm(action: .restart) { [weak self] confirmed in
+                guard confirmed else { return }
+                ServiceManager.shared.restartUnmanagedService(pid: pid) { [weak self] success, message in
+                    if !success, let message {
+                        self?.showAlert(title: "Could Not Restart the External Service", message: message)
+                    }
+                }
+            }
+            return
+        }
         ServiceManager.shared.restartService { [weak self] success, message in
             if !success, let message {
                 self?.showAlert(title: "Could Not Restart the Service", message: message)

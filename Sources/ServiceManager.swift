@@ -671,6 +671,293 @@ final class ServiceManager {
         }
     }
 
+    // MARK: - Services started outside DSH Bar
+
+    /// Details shown before an external service is touched. The user has to see
+    /// exactly which process is about to be terminated, so the command line is
+    /// resolved on request rather than guessed from the port.
+    struct ExternalServiceInfo {
+        let pid: Int32
+        let port: Int
+        let command: String
+    }
+
+    var hasUnmanagedService: Bool {
+        snapshot.isRunning && !snapshot.isManaged
+    }
+
+    func describeUnmanagedService(completion: @escaping (ExternalServiceInfo?) -> Void) {
+        let current = snapshot
+        guard current.isRunning, !current.isManaged, let pid = current.pid else {
+            completion(nil)
+            return
+        }
+        let activePort = current.port
+        DispatchQueue.global(qos: .userInitiated).async {
+            let command = Self.commandLine(for: pid)
+            DispatchQueue.main.async {
+                completion(
+                    ExternalServiceInfo(
+                        pid: pid,
+                        port: activePort,
+                        command: command ?? "PID \(pid)"
+                    )
+                )
+            }
+        }
+    }
+
+    /// Terminates a service the user confirmed, even though DSH Bar did not
+    /// start it. The request always carries an explicit PID, and the script
+    /// re-verifies that this PID is the *only* listener on the port and that it
+    /// really answers as DeepSeek Harness before signalling it.
+    func stopUnmanagedService(pid: Int32, completion: @escaping (Bool, String?) -> Void) {
+        guard !snapshot.phase.isBusy else {
+            completion(false, "A service operation is already in progress.")
+            return
+        }
+        guard snapshot.isRunning, !snapshot.isManaged else {
+            completion(false, unmanagedRefusalReason())
+            return
+        }
+        guard snapshot.pid == pid else {
+            completion(false, "That process is no longer the service on this port. Refresh and try again.")
+            return
+        }
+        let currentPort = snapshot.port
+        updateSnapshot {
+            $0.phase = .stopping
+            $0.message = nil
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let outcome = self.runExternalStopScript(port: currentPort, pid: pid)
+            Thread.sleep(forTimeInterval: 0.35)
+            let probe = self.probe(port: currentPort)
+            DispatchQueue.main.async {
+                self.finishUnmanagedStop(
+                    outcome: outcome,
+                    probe: probe,
+                    port: currentPort,
+                    completion: completion
+                )
+            }
+        }
+    }
+
+    /// Stops the externally started service and relaunches it under DSH Bar's
+    /// management, so later Stop/Restart work without any terminal round trip.
+    func restartUnmanagedService(pid: Int32, completion: @escaping (Bool, String?) -> Void) {
+        guard !snapshot.phase.isBusy else {
+            completion(false, "A service operation is already in progress.")
+            return
+        }
+        guard snapshot.isRunning, !snapshot.isManaged else {
+            completion(false, unmanagedRefusalReason())
+            return
+        }
+        guard snapshot.pid == pid else {
+            completion(false, "That process is no longer the service on this port. Refresh and try again.")
+            return
+        }
+        let currentPort = snapshot.port
+        let targetPort = port
+        authenticatedURL = nil
+        updateSnapshot {
+            $0.phase = .restarting
+            $0.message = nil
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let outcome = self.runExternalStopScript(port: currentPort, pid: pid)
+            guard case .stopped = outcome else {
+                DispatchQueue.main.async {
+                    self.finishUnmanagedStop(
+                        outcome: outcome,
+                        probe: self.probe(port: currentPort),
+                        port: currentPort,
+                        completion: completion
+                    )
+                }
+                return
+            }
+
+            Thread.sleep(forTimeInterval: 0.6)
+            guard case .unavailable = self.probe(port: currentPort) else {
+                DispatchQueue.main.async {
+                    let message = "The external service is still listening on port \(currentPort); restart was cancelled."
+                    self.updateSnapshot {
+                        $0.phase = .portConflict
+                        $0.message = message
+                        $0.isManaged = false
+                    }
+                    completion(false, message)
+                }
+                return
+            }
+
+            if targetPort != currentPort {
+                guard case .unavailable = self.probe(port: targetPort) else {
+                    DispatchQueue.main.async {
+                        let message = "Port \(targetPort) is already in use, so the service was not restarted."
+                        self.updateSnapshot {
+                            $0.phase = .portConflict
+                            $0.port = targetPort
+                            $0.message = message
+                            $0.isManaged = false
+                        }
+                        completion(false, message)
+                    }
+                    return
+                }
+            }
+
+            DispatchQueue.main.async {
+                self.launchAndWait(completion: completion)
+            }
+        }
+    }
+
+    private enum ExternalStopOutcome {
+        case stopped
+        case refused(String)
+    }
+
+    /// Explains why an external stop/restart request was rejected, so the alert
+    /// names the real condition instead of a generic failure.
+    private func unmanagedRefusalReason() -> String {
+        switch snapshot.phase {
+        case .portConflict:
+            return "Port \(snapshot.port) is held by a process that does not answer as DeepSeek Harness, so it was left alone."
+        case .running:
+            return "This service was started by DSH Bar, so use the normal Stop and Restart actions."
+        default:
+            return "DeepSeek Harness is not running, so there is nothing to stop."
+        }
+    }
+
+    private func finishUnmanagedStop(
+        outcome: ExternalStopOutcome,
+        probe: ProbeResult,
+        port: Int,
+        completion: @escaping (Bool, String?) -> Void
+    ) {
+        switch outcome {
+        case let .refused(reason):
+            updateSnapshot {
+                $0.phase = .running
+                $0.message = reason
+                $0.isManaged = false
+            }
+            completion(false, reason)
+        case .stopped:
+            if case .harness = probe {
+                let message = "The process was terminated but port \(port) is still serving DeepSeek Harness."
+                updateSnapshot {
+                    $0.phase = .portConflict
+                    $0.message = message
+                    $0.isManaged = false
+                }
+                completion(false, message)
+                return
+            }
+            if case let .foreign(pid) = probe {
+                let message = pid.map { "Port \(port) is now held by PID \($0)." }
+                    ?? "Port \(port) is now held by another process."
+                updateSnapshot {
+                    $0.phase = .portConflict
+                    $0.pid = pid
+                    $0.startedAt = nil
+                    $0.message = message
+                    $0.isManaged = false
+                }
+                completion(false, message)
+                return
+            }
+            launchedProcess = nil
+            launchedLogHandle?.closeFile()
+            launchedLogHandle = nil
+            authenticatedURL = nil
+            clearManagedRecord()
+            updateSnapshot {
+                $0.phase = .stopped
+                $0.port = SettingsManager.shared.port
+                $0.pid = nil
+                $0.startedAt = nil
+                $0.message = nil
+                $0.isManaged = false
+            }
+            completion(true, nil)
+        }
+    }
+
+    private func runExternalStopScript(port: Int, pid: Int32) -> ExternalStopOutcome {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [
+            "-c", Self.externalStopScript,
+            "dsh-stop-external",
+            "\(port)",
+            "\(pid)"
+        ]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            let result = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(separator: "\n")
+                .last
+                .map(String.init) ?? ""
+            switch result {
+            case "STOPPED":
+                return .stopped
+            case "NONE":
+                return .refused("The process was already gone.")
+            case "MULTIPLE-LISTENERS":
+                return .refused("Several processes listen on port \(port), so nothing was stopped.")
+            case "NOT-LISTENER":
+                return .refused("PID \(pid) no longer listens on port \(port). Nothing was stopped.")
+            case "NOT-HARNESS":
+                return .refused("PID \(pid) does not answer as DeepSeek Harness, so it was left alone.")
+            case "FORBIDDEN":
+                return .refused("PID \(pid) belongs to another user or a protected process.")
+            default:
+                return .refused(result.isEmpty ? "Failed to stop the external service." : result)
+            }
+        } catch {
+            return .refused(error.localizedDescription)
+        }
+    }
+
+    private static func commandLine(for pid: Int32) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-p", "\(pid)", "-o", "command="]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return nil
+        }
+
+        let output = String(
+            data: pipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        )?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (output?.isEmpty == false) ? output : nil
+    }
+
     private func launchAndWait(completion: @escaping (Bool, String?) -> Void) {
         let currentPort = port
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -980,6 +1267,67 @@ final class ServiceManager {
       sleep 0.3
     fi
     rm -f "$PIDFILE"
+    echo "STOPPED"
+    exit 0
+    """
+
+    /// Terminates a service the user explicitly confirmed, even though DSH Bar
+    /// did not start it. Safety comes from re-checking, inside the script, that
+    /// the caller-supplied PID owns its process, is the *only* listener on the
+    /// port, and really answers as DeepSeek Harness.
+    private static let externalStopScript = """
+    PORT="$1"; PID="$2"
+    export PATH="/usr/sbin:/sbin:/usr/bin:/bin:/opt/homebrew/bin:$PATH"
+
+    alive() {
+      st=$(ps -p "$1" -o stat= 2>/dev/null | tr -d ' ')
+      [ -n "$st" ] || return 1
+      case "$st" in Z*) return 1 ;; esac
+      return 0
+    }
+
+    is_harness_http() {
+      body=$(curl -s --max-time 2 "http://127.0.0.1:$PORT/" 2>/dev/null | head -c 4096 | tr 'A-Z' 'a-z')
+      case "$body" in
+        *"dsh web"*|*"__dsh_boot__"*|*"deepseek harness"*) return 0 ;;
+        *) return 1 ;;
+      esac
+    }
+
+    case "$PID" in
+      ''|*[!0-9]*) echo "NO-PID"; exit 9 ;;
+    esac
+    alive "$PID" || { echo "NONE"; exit 4; }
+
+    owner=$(ps -p "$PID" -o user= 2>/dev/null | tr -d ' ')
+    [ "$owner" = "$(id -un)" ] || { echo "FORBIDDEN"; exit 7; }
+
+    listeners=$(lsof -ti :"$PORT" -sTCP:LISTEN 2>/dev/null || true)
+    [ -n "$listeners" ] || { echo "NONE"; exit 4; }
+
+    case " $listeners " in
+      *" $PID "*) ;;
+      *) echo "NOT-LISTENER"; exit 8 ;;
+    esac
+
+    count=$(echo "$listeners" | wc -l | tr -d ' ')
+    [ "$count" = "1" ] || { echo "MULTIPLE-LISTENERS"; exit 10; }
+
+    is_harness_http || { echo "NOT-HARNESS"; exit 11; }
+
+    kill "$PID" 2>/dev/null || true
+    i=0
+    while [ $i -lt 20 ]; do
+      alive "$PID" || break
+      sleep 0.15
+      i=$((i + 1))
+    done
+    if alive "$PID"; then
+      kill -9 "$PID" 2>/dev/null || true
+      sleep 0.3
+    fi
+
+    alive "$PID" && { echo "STILL-RUNNING"; exit 12; }
     echo "STOPPED"
     exit 0
     """

@@ -67,7 +67,9 @@ xattr -cr "/Applications/DSH Bar.app"
 - 🟢 **详细服务状态**：菜单栏与设置页显示检查中、启动中、运行中、停止中、重启中、端口冲突和错误，并提供 PID、运行时长及已安装 DSH 版本。
 - 🔌 **自定义端口**：默认 3080。运行中修改端口会保留旧监听，重启前先检查新端口，避免误停或遗留服务。
 - 🚀 **安静启停 / 重启**：始终使用 `dsh web --no-open` 在后台启动；Start 和 Restart 不会拉起浏览器。
-- 🔐 **只管理自己的服务**：启动时把 `{PID, 端口, 启动时间}` 记录到 `~/.dsh/dsh-bar-service.json`。停止前会校验进程启动时间是否匹配，PID 被复用时拒绝操作；不是本应用启动的 Harness 只显示状态，不会去停止或重启它。
+- 🔐 **只管理自己的服务**：启动时把 `{PID, 端口, 启动时间}` 记录到 `~/.dsh/dsh-bar-service.json`。停止前会校验进程启动时间是否匹配，PID 被复用时拒绝操作。
+- 🔧 **也能关掉终端里启动的服务**：若服务是你自己用 `dsh web` 起的，面板会显示 **Stop External…** 与 **Adopt & Restart**。点击后弹窗列出该进程的 PID、端口和完整命令行，确认后才结束它；`Adopt & Restart` 会顺手改由 DSH Bar 接管，之后 Stop/Restart 无需再回终端。非 Harness 监听者、多进程监听、非当前用户的进程一律拒绝。
+- 🪟 **面板失焦自动置后**：偏好设置面板只在获得焦点时浮于最前，切换到其他应用后会回到普通层级，不再遮挡窗口；重新点开时自动恢复置顶。
 - 🌐 **显式打开 Web**：只有点击 Open Web 或使用其全局热键时才打开浏览器，并使用本次启动捕获的认证 URL（token 只留在内存中）。
 - 📜 **内置实时日志**：直接在应用中跟踪 `~/.dsh/logs/dsh-web.log`，支持暂停、搜索、清空当前视图和在 Finder 中定位；显示时会自动隐藏 URL 中的进程 token。
 - 🔎 **DSH 自动检测**：通过 `which dsh` 检测路径和版本，未安装时提供 npm 安装引导。
@@ -155,7 +157,8 @@ dsh-bar-macos/
 │   ├── SettingsManager.swift   # 端口、开机启动 (SMAppService)、热键持久化
 │   ├── DashboardWindow.swift   # 毛玻璃偏好设置面板
 │   ├── LogWindow.swift         # 内置实时日志窗口
-│   └── DshInstallAssistant.swift # DSH/npm 安装引导
+│   ├── DshInstallAssistant.swift # DSH/npm 安装引导
+│   └── ExternalServicePrompt.swift # 结束外部启动服务的确认弹窗
 ├── Resources/
 │   ├── AppIcon.icns            # 应用图标 (1024x1024)
 │   └── icon.png                # README 与面板使用的图标

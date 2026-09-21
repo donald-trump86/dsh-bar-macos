@@ -35,6 +35,7 @@ SOURCE_FILES=(
     Sources/DashboardWindow.swift
     Sources/LogWindow.swift
     Sources/DshInstallAssistant.swift
+    Sources/ExternalServicePrompt.swift
 )
 COMMON_SWIFT_FLAGS=(
     -O

@@ -48,12 +48,27 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
+        // Float only while the panel is focused. Losing focus drops it back to
+        // the normal level so it no longer covers whatever the user switches to.
         window.level = .floating
         window.backgroundColor = .clear
         
         super.init(window: window)
         setupUI()
-        
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(panelDidBecomeKey),
+            name: NSWindow.didBecomeKeyNotification,
+            object: window
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(panelDidResignKey),
+            name: NSWindow.didResignKeyNotification,
+            object: window
+        )
+
         // Subscribe independently: the panel and the menu bar each receive every
         // status/port change. Previously these were single callback slots, so the
         // panel overwrote the menu bar's closure and the menu went stale.
@@ -68,12 +83,29 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func panelDidBecomeKey() {
+        window?.level = .floating
+    }
+
+    @objc private func panelDidResignKey() {
+        guard window?.isVisible == true else { return }
+        window?.level = .normal
+    }
     
     override func showWindow(_ sender: Any?) {
         // Always reflect the latest state when the panel is brought up.
         updateState(ServiceManager.shared.snapshot)
         ServiceManager.shared.detectDshInstallation()
+        // Re-float explicitly: the panel may have been dropped to the normal
+        // level when it lost focus before being closed.
+        window?.level = .floating
         super.showWindow(sender)
+        window?.makeKeyAndOrderFront(sender)
     }
     
     private func setupUI() {
@@ -134,7 +166,10 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         header.addSubview(iconView)
 
         let titleLabel = makeLabel("DeepSeek Harness", size: 20, weight: .bold)
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.1"
+        // Inside the app bundle this always resolves; the fallback only shows up
+        // in tooling that runs the sources without an Info.plist.
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            ?? "dev"
         let subtitleLabel = makeLabel("Menu Bar Companion  •  v\(version)", size: 12, weight: .medium, color: .secondaryLabelColor)
         subtitleLabel.lineBreakMode = .byTruncatingTail
 
@@ -610,24 +645,28 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         serviceDetailsLabel.stringValue = details.joined(separator: "  •  ")
 
         let busy = snapshot.phase.isBusy || snapshot.phase == .checking
-        // A service this app did not start is shown but never driven: the panel
-        // stays honest about what DSH Bar is allowed to touch.
-        let runningButForeign = snapshot.isRunning && !snapshot.isManaged
+        // A service started outside DSH Bar stays fully controllable, but every
+        // action on it goes through a confirmation that names the exact process.
+        let externallyStarted = snapshot.isRunning && !snapshot.isManaged
         openButton.isEnabled = snapshot.isRunning
-        restartButton.isEnabled = snapshot.isRunning && !busy && snapshot.isManaged
-        toggleButton.isEnabled = !busy && !runningButForeign
+        restartButton.isEnabled = snapshot.isRunning && !busy
+        toggleButton.isEnabled = !busy
         // Editing the port mid-operation would desync the in-flight target port.
         portField.isEnabled = !busy
         portResetButton.isEnabled = !busy
         switch snapshot.phase {
-        case .running where snapshot.isManaged:
-            toggleButton.title = "Stop Service"
+        case .running where externallyStarted:
+            toggleButton.title = "Stop External…"
+            restartButton.title = "Adopt & Restart"
         case .running:
-            toggleButton.title = "Not Managed"
+            toggleButton.title = "Stop Service"
+            restartButton.title = "Restart"
         case .portConflict, .error:
             toggleButton.title = "Retry Start"
+            restartButton.title = "Restart"
         default:
             toggleButton.title = "Start Service"
+            restartButton.title = "Restart"
         }
 
         if !ServiceManager.shared.dshDetectionComplete {
@@ -655,6 +694,14 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     
     @objc private func didClickToggle() {
         if ServiceManager.shared.isRunning {
+            if ServiceManager.shared.hasUnmanagedService {
+                guard let pid = ServiceManager.shared.snapshot.pid else { return }
+                ExternalServicePrompt.confirm(action: .stop) { [weak self] confirmed in
+                    guard confirmed else { return }
+                    self?.stopUnmanagedService(pid: pid)
+                }
+                return
+            }
             toggleButton.isEnabled = false
             ServiceManager.shared.stopService { [weak self] success, message in
                 self?.toggleButton.isEnabled = true
@@ -674,13 +721,41 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             }
         }
     }
-    
+
+    private func stopUnmanagedService(pid: Int32) {
+        toggleButton.isEnabled = false
+        ServiceManager.shared.stopUnmanagedService(pid: pid) { [weak self] success, message in
+            self?.toggleButton.isEnabled = true
+            if !success, let message = message {
+                self?.showAlert(title: "Could Not Stop the External Service", message: message)
+            }
+        }
+    }
+
     @objc private func didClickRestart() {
+        if ServiceManager.shared.hasUnmanagedService {
+            guard let pid = ServiceManager.shared.snapshot.pid else { return }
+            ExternalServicePrompt.confirm(action: .restart) { [weak self] confirmed in
+                guard confirmed else { return }
+                self?.restartUnmanagedService(pid: pid)
+            }
+            return
+        }
         restartButton.isEnabled = false
         ServiceManager.shared.restartService { [weak self] success, message in
             self?.restartButton.isEnabled = true
             if !success, let message = message {
                 self?.showAlert(title: "Could Not Restart the Service", message: message)
+            }
+        }
+    }
+
+    private func restartUnmanagedService(pid: Int32) {
+        restartButton.isEnabled = false
+        ServiceManager.shared.restartUnmanagedService(pid: pid) { [weak self] success, message in
+            self?.restartButton.isEnabled = true
+            if !success, let message = message {
+                self?.showAlert(title: "Could Not Restart the External Service", message: message)
             }
         }
     }
