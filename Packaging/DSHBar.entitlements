@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- DSH Bar is not sandboxed: it launches the user's own `dsh` CLI, which
+         runs as a separate process and is unaffected by these entitlements.
+         The app itself needs no hardened-runtime exceptions, so this stays
+         empty on purpose. -->
+</dict>
+</plist>

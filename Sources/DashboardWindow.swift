@@ -19,6 +19,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     private let toggleButton = NSButton()
     private let restartButton = NSButton()
     private let logsButton = NSButton()
+    private let serviceDetailsLabel = NSTextField(labelWithString: "Checking service details…")
     
     // Preferences UI
     private let portField = NSTextField()
@@ -26,6 +27,8 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     private let launchAtLoginCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let hotKeyButton = NSButton()
     private let hotKeyResetButton = NSButton()
+    private let dshInfoLabel = NSTextField(labelWithString: "Detecting DSH CLI…")
+    private let dshActionButton = NSButton()
     
     private var localEventMonitor: Any?
     private var isRecordingHotKey = false
@@ -35,7 +38,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 580),
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 630),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -54,8 +57,8 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         // Subscribe independently: the panel and the menu bar each receive every
         // status/port change. Previously these were single callback slots, so the
         // panel overwrote the menu bar's closure and the menu went stale.
-        statusObserverToken = ServiceManager.shared.addStatusObserver { [weak self] running in
-            self?.updateState(running)
+        statusObserverToken = ServiceManager.shared.addStatusObserver { [weak self] snapshot in
+            self?.updateState(snapshot)
         }
         portObserverToken = SettingsManager.shared.addPortObserver { [weak self] port in
             self?.updateUrlDisplay(port: port)
@@ -68,7 +71,8 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     
     override func showWindow(_ sender: Any?) {
         // Always reflect the latest state when the panel is brought up.
-        updateState(ServiceManager.shared.isRunning)
+        updateState(ServiceManager.shared.snapshot)
+        ServiceManager.shared.detectDshInstallation()
         super.showWindow(sender)
     }
     
@@ -99,12 +103,12 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             serviceCard.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 14),
             serviceCard.leadingAnchor.constraint(equalTo: header.leadingAnchor),
             serviceCard.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-            serviceCard.heightAnchor.constraint(equalToConstant: 132),
+            serviceCard.heightAnchor.constraint(equalToConstant: 160),
 
             preferencesCard.topAnchor.constraint(equalTo: serviceCard.bottomAnchor, constant: 14),
             preferencesCard.leadingAnchor.constraint(equalTo: header.leadingAnchor),
             preferencesCard.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-            preferencesCard.heightAnchor.constraint(equalToConstant: 230),
+            preferencesCard.heightAnchor.constraint(equalToConstant: 270),
 
             footer.leadingAnchor.constraint(equalTo: header.leadingAnchor),
             footer.trailingAnchor.constraint(equalTo: header.trailingAnchor),
@@ -210,6 +214,12 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         copyButton.translatesAutoresizingMaskIntoConstraints = false
         urlContainer.addSubview(copyButton)
 
+        serviceDetailsLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        serviceDetailsLabel.textColor = .secondaryLabelColor
+        serviceDetailsLabel.lineBreakMode = .byTruncatingTail
+        serviceDetailsLabel.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(serviceDetailsLabel)
+
         configureActionButton(openButton, title: "Open Web", action: #selector(didClickOpen))
         openButton.keyEquivalent = "\r"
         configureActionButton(toggleButton, title: "Start Service", action: #selector(didClickToggle))
@@ -242,7 +252,11 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             copyButton.widthAnchor.constraint(equalToConstant: 68),
             copyButton.heightAnchor.constraint(equalToConstant: 26),
 
-            actions.topAnchor.constraint(equalTo: urlContainer.bottomAnchor, constant: 10),
+            serviceDetailsLabel.topAnchor.constraint(equalTo: urlContainer.bottomAnchor, constant: 8),
+            serviceDetailsLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 18),
+            serviceDetailsLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -18),
+
+            actions.topAnchor.constraint(greaterThanOrEqualTo: serviceDetailsLabel.bottomAnchor, constant: 8),
             actions.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
             actions.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
             actions.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -13),
@@ -333,6 +347,34 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         launchAtLoginCheckbox.translatesAutoresizingMaskIntoConstraints = false
         loginRow.addSubview(launchAtLoginCheckbox)
 
+        let separator3 = makeSeparator()
+        card.addSubview(separator3)
+
+        let dshRow = NSView()
+        dshRow.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(dshRow)
+
+        let dshTitleLabel = makeLabel("DSH Command Line", size: 13, weight: .medium)
+        dshInfoLabel.font = NSFont.systemFont(ofSize: 11)
+        dshInfoLabel.textColor = .secondaryLabelColor
+        dshInfoLabel.lineBreakMode = .byTruncatingMiddle
+        dshInfoLabel.translatesAutoresizingMaskIntoConstraints = false
+        let dshText = NSStackView(views: [dshTitleLabel, dshInfoLabel])
+        dshText.orientation = .vertical
+        dshText.alignment = .leading
+        dshText.spacing = 1
+        dshText.translatesAutoresizingMaskIntoConstraints = false
+        dshText.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        dshRow.addSubview(dshText)
+
+        dshActionButton.title = "Recheck"
+        dshActionButton.bezelStyle = .rounded
+        dshActionButton.controlSize = .small
+        dshActionButton.target = self
+        dshActionButton.action = #selector(didClickDshAction)
+        dshActionButton.translatesAutoresizingMaskIntoConstraints = false
+        dshRow.addSubview(dshActionButton)
+
         NSLayoutConstraint.activate([
             title.topAnchor.constraint(equalTo: card.topAnchor, constant: 15),
             title.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 18),
@@ -381,13 +423,31 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             loginRow.topAnchor.constraint(equalTo: separator2.bottomAnchor),
             loginRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
             loginRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            loginRow.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
+            loginRow.heightAnchor.constraint(equalToConstant: 54),
 
             loginText.leadingAnchor.constraint(equalTo: loginRow.leadingAnchor),
             loginText.centerYAnchor.constraint(equalTo: loginRow.centerYAnchor),
             loginText.trailingAnchor.constraint(lessThanOrEqualTo: launchAtLoginCheckbox.leadingAnchor, constant: -12),
             launchAtLoginCheckbox.trailingAnchor.constraint(equalTo: loginRow.trailingAnchor),
-            launchAtLoginCheckbox.centerYAnchor.constraint(equalTo: loginRow.centerYAnchor)
+            launchAtLoginCheckbox.centerYAnchor.constraint(equalTo: loginRow.centerYAnchor),
+
+            separator3.topAnchor.constraint(equalTo: loginRow.bottomAnchor),
+            separator3.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
+            separator3.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
+            separator3.heightAnchor.constraint(equalToConstant: 1),
+
+            dshRow.topAnchor.constraint(equalTo: separator3.bottomAnchor),
+            dshRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
+            dshRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
+            dshRow.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
+
+            dshText.leadingAnchor.constraint(equalTo: dshRow.leadingAnchor),
+            dshText.centerYAnchor.constraint(equalTo: dshRow.centerYAnchor),
+            dshText.trailingAnchor.constraint(lessThanOrEqualTo: dshActionButton.leadingAnchor, constant: -12),
+            dshActionButton.trailingAnchor.constraint(equalTo: dshRow.trailingAnchor),
+            dshActionButton.centerYAnchor.constraint(equalTo: dshRow.centerYAnchor),
+            dshActionButton.widthAnchor.constraint(equalToConstant: 78),
+            dshActionButton.heightAnchor.constraint(equalToConstant: 26)
         ])
 
         return card
@@ -497,35 +557,90 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         button.translatesAutoresizingMaskIntoConstraints = false
     }
 
-    private func updateUrlDisplay(port: Int) {
-        urlLabel.stringValue = "http://127.0.0.1:\(port)"
-        portField.stringValue = "\(port)"
+    private func updateUrlDisplay(port configuredPort: Int) {
+        let activePort = ServiceManager.shared.snapshot.isRunning
+            ? ServiceManager.shared.snapshot.port
+            : configuredPort
+        urlLabel.stringValue = "http://127.0.0.1:\(activePort)"
+        portField.stringValue = "\(configuredPort)"
     }
     
-    func updateState(_ isRunning: Bool) {
-        let port = ServiceManager.shared.port
-        if isRunning {
-            statusBadge.fillColor = NSColor.systemGreen.withAlphaComponent(0.15)
-            statusBadge.borderColor = NSColor.systemGreen.withAlphaComponent(0.4)
-            statusDot.fillColor = NSColor.systemGreen
-            statusText.stringValue = "RUNNING : \(port)"
-            statusText.textColor = NSColor.systemGreen
-            
-            toggleButton.title = "Stop Service"
-            openButton.isEnabled = true
-            restartButton.isEnabled = true
-        } else {
-            statusBadge.fillColor = NSColor.textColor.withAlphaComponent(0.08)
-            statusBadge.borderColor = NSColor.separatorColor.withAlphaComponent(0.3)
-            statusDot.fillColor = NSColor.tertiaryLabelColor
+    func updateState(_ snapshot: ServiceSnapshot) {
+        let color: NSColor
+        switch snapshot.phase {
+        case .running:
+            color = .systemGreen
+            statusText.stringValue = "RUNNING : \(snapshot.port)"
+        case .checking:
+            color = .systemOrange
+            statusText.stringValue = "CHECKING"
+        case .starting:
+            color = .systemOrange
+            statusText.stringValue = "STARTING"
+        case .stopping:
+            color = .systemOrange
+            statusText.stringValue = "STOPPING"
+        case .restarting:
+            color = .systemOrange
+            statusText.stringValue = "RESTARTING"
+        case .portConflict:
+            color = .systemRed
+            statusText.stringValue = "PORT IN USE"
+        case .error:
+            color = .systemRed
+            statusText.stringValue = "ERROR"
+        case .stopped:
+            color = .secondaryLabelColor
             statusText.stringValue = "STOPPED"
-            statusText.textColor = NSColor.secondaryLabelColor
-            
-            toggleButton.title = "Start Service"
-            openButton.isEnabled = false
-            restartButton.isEnabled = false
         }
-        updateUrlDisplay(port: port)
+
+        statusBadge.fillColor = color.withAlphaComponent(0.15)
+        statusBadge.borderColor = color.withAlphaComponent(0.4)
+        statusDot.fillColor = color
+        statusText.textColor = color
+
+        var details: [String] = []
+        if let pid = snapshot.pid { details.append("PID \(pid)") }
+        if let uptime = snapshot.uptime { details.append("Up \(Self.formatDuration(uptime))") }
+        if let version = snapshot.dshVersion { details.append("DSH \(version)") }
+        if let message = snapshot.message { details.append(message) }
+        if details.isEmpty {
+            details.append(snapshot.phase == .stopped ? "Service is not running" : "Checking service status…")
+        }
+        serviceDetailsLabel.stringValue = details.joined(separator: "  •  ")
+
+        let busy = snapshot.phase.isBusy || snapshot.phase == .checking
+        openButton.isEnabled = snapshot.isRunning
+        restartButton.isEnabled = snapshot.isRunning && !busy
+        toggleButton.isEnabled = !busy
+        // Editing the port mid-operation would desync the in-flight target port.
+        portField.isEnabled = !busy
+        portResetButton.isEnabled = !busy
+        switch snapshot.phase {
+        case .running:
+            toggleButton.title = "Stop Service"
+        case .portConflict, .error:
+            toggleButton.title = "Retry Start"
+        default:
+            toggleButton.title = "Start Service"
+        }
+
+        if !ServiceManager.shared.dshDetectionComplete {
+            dshInfoLabel.stringValue = "Searching PATH with which dsh…"
+            dshActionButton.title = "Checking…"
+            dshActionButton.isEnabled = false
+        } else if let path = snapshot.dshPath {
+            let version = snapshot.dshVersion.map { " • \($0)" } ?? ""
+            dshInfoLabel.stringValue = "Installed: \(path)\(version)"
+            dshActionButton.title = "Recheck"
+            dshActionButton.isEnabled = true
+        } else {
+            dshInfoLabel.stringValue = "Not found — install with npm to start the service"
+            dshActionButton.title = "Install…"
+            dshActionButton.isEnabled = true
+        }
+
+        updateUrlDisplay(port: SettingsManager.shared.port)
     }
     
     // MARK: - Actions
@@ -546,9 +661,9 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             toggleButton.isEnabled = false
             ServiceManager.shared.startService { [weak self] success, message in
                 self?.toggleButton.isEnabled = true
-                if success {
-                    ServiceManager.shared.openBrowser()
-                } else if let message = message {
+                if !success, ServiceManager.shared.snapshot.dshPath == nil {
+                    DshInstallAssistant.present()
+                } else if !success, let message = message {
                     self?.showAlert(title: "Could Not Start the Service", message: message)
                 }
             }
@@ -576,7 +691,19 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     }
     
     @objc private func didClickLogs() {
-        ServiceManager.shared.openLogs()
+        LogWindowController.shared.showWindow(nil)
+    }
+
+    @objc private func didClickDshAction() {
+        if ServiceManager.shared.snapshot.dshPath == nil {
+            DshInstallAssistant.present()
+        } else {
+            dshActionButton.isEnabled = false
+            dshActionButton.title = "Checking…"
+            ServiceManager.shared.detectDshInstallation { [weak self] _ in
+                self?.dshActionButton.isEnabled = true
+            }
+        }
     }
     
     @objc private func didClickCopy() {
@@ -592,6 +719,12 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     
     // MARK: - Port Actions
     private func applyCurrentPort() {
+        // A lifecycle operation captures its target port up front; accepting an
+        // edit now would make the running and configured ports diverge mid-flight.
+        guard !ServiceManager.shared.snapshot.phase.isBusy else {
+            portField.stringValue = "\(SettingsManager.shared.port)"
+            return
+        }
         let text = portField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if let newPort = Int(text), newPort > 0, newPort <= 65535 {
             if newPort != SettingsManager.shared.port {
@@ -700,6 +833,16 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         hotKeyButton.title = SettingsManager.shared.globalHotKeyDisplayString
     }
     
+    private static func formatDuration(_ interval: TimeInterval) -> String {
+        let total = max(0, Int(interval))
+        let days = total / 86_400
+        let hours = (total % 86_400) / 3_600
+        let minutes = (total % 3_600) / 60
+        if days > 0 { return "\(days)d \(hours)h" }
+        if hours > 0 { return "\(hours)h \(minutes)m" }
+        return "\(minutes)m"
+    }
+
     // MARK: - Preferences Actions
     @objc private func didToggleLaunchAtLogin() {
         let enabled = (launchAtLoginCheckbox.state == .on)

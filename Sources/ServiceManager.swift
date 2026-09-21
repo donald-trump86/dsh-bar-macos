@@ -1,29 +1,146 @@
 import Foundation
 import AppKit
 
+enum ServicePhase: String, Equatable {
+    case checking
+    case stopped
+    case starting
+    case running
+    case stopping
+    case restarting
+    case portConflict
+    case error
+
+    var isBusy: Bool {
+        switch self {
+        case .starting, .stopping, .restarting:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+struct ServiceSnapshot: Equatable {
+    var phase: ServicePhase
+    var port: Int
+    var pid: Int32?
+    var startedAt: Date?
+    var dshPath: String?
+    var dshVersion: String?
+    var message: String?
+    var isManaged: Bool
+
+    var isRunning: Bool { phase == .running }
+
+    var uptime: TimeInterval? {
+        guard let startedAt else { return nil }
+        return max(0, Date().timeIntervalSince(startedAt))
+    }
+}
+
 final class ServiceManager {
     static let shared = ServiceManager()
-    
-    var port: Int {
-        return SettingsManager.shared.port
-    }
-    
-    var baseUrl: URL {
-        return URL(string: "http://127.0.0.1:\(port)")!
-    }
-    
-    private(set) var isRunning: Bool = false
+    static let installCommand = "npm install -g @deepseek-ai/dsh"
 
-    // Status changes are broadcast to every observer (menu bar and preferences
-    // panel) instead of a single callback slot that later registrants overwrite.
-    private var statusObservers: [UUID: (Bool) -> Void] = [:]
+    var port: Int { SettingsManager.shared.port }
+
+    var baseUrl: URL {
+        let activePort = snapshot.isRunning ? snapshot.port : port
+        return URL(string: "http://127.0.0.1:\(activePort)")!
+    }
+
+    private(set) var snapshot: ServiceSnapshot
+    private(set) var dshDetectionComplete = false
+    var isRunning: Bool { snapshot.isRunning }
+
+    private var statusObservers: [UUID: (ServiceSnapshot) -> Void] = [:]
     private var portObserverToken: UUID?
+    private var timer: Timer?
+    private var checkInFlight = false
+    private var pendingCheckCompletions: [(Bool) -> Void] = []
+    private var consecutiveProbeMisses = 0
+    private let session: URLSession
+    private var launchedProcess: Process?
+    private var launchedLogHandle: FileHandle?
+    private var authenticatedURL: URL?
+    private var managedRecord: ManagedServiceRecord?
+
+    private enum ProbeResult {
+        case harness(pid: Int32?, startedAt: Date?)
+        case foreign(pid: Int32?)
+        case unavailable
+
+        var isHarness: Bool {
+            if case .harness = self { return true }
+            return false
+        }
+    }
+
+    private enum StopResult {
+        case stopped
+        case foreign
+        case none
+        case failed(String)
+    }
+
+    private struct ManagedServiceRecord: Codable {
+        let pid: Int32
+        let port: Int
+        let startedAt: Date
+        let executablePath: String
+    }
+
+    private init() {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 1.0
+        config.timeoutIntervalForResource = 1.0
+        session = URLSession(configuration: config)
+        let restoredRecord = Self.loadManagedRecord()
+        managedRecord = restoredRecord
+        snapshot = ServiceSnapshot(
+            phase: .checking,
+            port: restoredRecord?.port ?? SettingsManager.shared.port,
+            pid: restoredRecord?.pid,
+            startedAt: restoredRecord?.startedAt,
+            dshPath: nil,
+            dshVersion: nil,
+            message: nil,
+            isManaged: false
+        )
+
+        portObserverToken = SettingsManager.shared.addPortObserver { [weak self] newPort in
+            guard let self else { return }
+            if self.snapshot.phase.isBusy {
+                self.updateSnapshot {
+                    $0.message = "Configured port changed to \(newPort). It will apply after the current operation."
+                }
+            } else if self.snapshot.isRunning {
+                // Keep the actual running port until the user restarts. Otherwise
+                // changing the configured port would orphan the old listener.
+                self.updateSnapshot {
+                    $0.message = newPort == $0.port
+                        ? nil
+                        : "Configured port changed to \(newPort). Restart to apply it."
+                }
+            } else {
+                self.updateSnapshot {
+                    $0.port = newPort
+                    $0.phase = .checking
+                    $0.pid = nil
+                    $0.startedAt = nil
+                    $0.message = nil
+                }
+                self.checkStatus()
+            }
+        }
+    }
 
     @discardableResult
-    func addStatusObserver(_ observer: @escaping (Bool) -> Void) -> UUID {
+    func addStatusObserver(_ observer: @escaping (ServiceSnapshot) -> Void) -> UUID {
         let token = UUID()
         statusObservers[token] = observer
-        observer(isRunning) // deliver the current value immediately
+        observer(snapshot)
         return token
     }
 
@@ -31,351 +148,952 @@ final class ServiceManager {
         statusObservers.removeValue(forKey: token)
     }
 
-    private func notifyStatusObservers(_ running: Bool) {
+    private func updateSnapshot(_ mutation: (inout ServiceSnapshot) -> Void) {
+        precondition(Thread.isMainThread)
+        mutation(&snapshot)
         for observer in Array(statusObservers.values) {
-            observer(running)
+            observer(snapshot)
         }
     }
-    
-    private var timer: Timer?
-    private let session: URLSession
-    
-    private init() {
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 1.0
-        config.timeoutIntervalForResource = 1.0
-        self.session = URLSession(configuration: config)
-        
-        portObserverToken = SettingsManager.shared.addPortObserver { [weak self] _ in
-            self?.checkStatus()
-        }
-    }
-    
+
     func startMonitoring(interval: TimeInterval = 2.0) {
+        detectDshInstallation()
         checkStatus()
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        let monitorTimer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             self?.checkStatus()
         }
+        timer = monitorTimer
+        RunLoop.main.add(monitorTimer, forMode: .common)
     }
-    
+
     func stopMonitoring() {
         timer?.invalidate()
         timer = nil
     }
-    
-    /// Body markers that only the DeepSeek Harness web server serves, so an
-    /// unrelated process squatting on the port is not mistaken for Harness.
-    /// Unauthenticated it answers 401 with "dsh web authentication required …";
-    /// the authenticated shell injects `__DSH_BOOT__`.
-    private static let harnessMarkers = ["dsh web", "__dsh_boot__", "deepseek harness"]
-    
-    func checkStatus(completion: ((Bool) -> Void)? = nil) {
-        var request = URLRequest(url: baseUrl)
-        request.httpMethod = "GET"
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        
-        let task = session.dataTask(with: request) { [weak self] data, response, error in
-            let running: Bool
-            if let httpResponse = response as? HTTPURLResponse {
-                let body = String(data: data ?? Data(), encoding: .utf8)?.lowercased() ?? ""
-                let reachable = (200...599).contains(httpResponse.statusCode)
-                running = reachable && Self.harnessMarkers.contains { body.contains($0) }
-            } else {
-                running = false
-            }
-            
+
+    // MARK: - DSH Installation
+
+    func detectDshInstallation(completion: ((Bool) -> Void)? = nil) {
+        dshDetectionComplete = false
+        updateSnapshot { _ in }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            let path = self.findDshBinary()
+            let version = path.flatMap { self.readDshVersion(at: $0) }
             DispatchQueue.main.async {
-                guard let self = self else { return }
-                let changed = (self.isRunning != running)
-                self.isRunning = running
-                if changed {
-                    self.notifyStatusObservers(running)
+                self.dshDetectionComplete = true
+                self.updateSnapshot {
+                    $0.dshPath = path
+                    $0.dshVersion = version
                 }
-                completion?(running)
+                completion?(path != nil)
             }
         }
-        task.resume()
     }
-    
+
     func findDshBinary() -> String? {
-        let candidates = [
-            "/opt/homebrew/bin/dsh",
-            "/usr/local/bin/dsh",
-            "\(NSHomeDirectory())/.local/bin/dsh"
-        ]
-        for path in candidates {
-            if FileManager.default.isExecutableFile(atPath: path) {
-                return path
-            }
-        }
-        
-        // Search in system PATH via which
+        findExecutable(named: "dsh")
+    }
+
+    func findNpmBinary() -> String? {
+        findExecutable(named: "npm")
+    }
+
+    private func findExecutable(named name: String) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-        process.arguments = ["dsh"]
+        process.arguments = [name]
+        process.environment = Self.commandEnvironment()
         let pipe = Pipe()
         process.standardOutput = pipe
-        try? process.run()
-        process.waitUntilExit()
-        
-        if process.terminationStatus == 0 {
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !path.isEmpty, FileManager.default.isExecutableFile(atPath: path) {
-                return path
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return nil
+        }
+
+        guard process.terminationStatus == 0 else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let path = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !path.isEmpty,
+              FileManager.default.isExecutableFile(atPath: path) else {
+            return nil
+        }
+        return path
+    }
+
+    private func readDshVersion(at path: String) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = ["--version"]
+        process.environment = Self.commandEnvironment()
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return nil
+        }
+
+        let output = String(
+            data: pipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        )?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return output?.split(separator: "\n").first.map(String.init)
+    }
+
+    private static func commandEnvironment() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        let home = NSHomeDirectory()
+        let preferredPaths = [
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            "\(home)/.local/bin",
+            "\(home)/.npm-global/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin"
+        ]
+        let inheritedPath = environment["PATH"] ?? ""
+        environment["PATH"] = (preferredPaths + [inheritedPath])
+            .filter { !$0.isEmpty }
+            .joined(separator: ":")
+        environment["LANG"] = "en_US.UTF-8"
+        environment["LC_ALL"] = "en_US.UTF-8"
+        return environment
+    }
+
+    // MARK: - Status Monitoring
+
+    private static let harnessMarkers = ["dsh web", "__dsh_boot__", "deepseek harness"]
+
+    func checkStatus(completion: ((Bool) -> Void)? = nil) {
+        if let completion {
+            pendingCheckCompletions.append(completion)
+        }
+        guard !checkInFlight else { return }
+        checkInFlight = true
+        let checkedPort = snapshot.isRunning ? snapshot.port : (managedRecord?.port ?? port)
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            let result = self.probe(port: checkedPort)
+            DispatchQueue.main.async {
+                self.checkInFlight = false
+                let expectedPort = self.snapshot.isRunning
+                    ? self.snapshot.port
+                    : (self.managedRecord?.port ?? self.port)
+                if !self.snapshot.phase.isBusy, expectedPort == checkedPort {
+                    self.applyProbe(result, port: checkedPort)
+                }
+                let completions = self.pendingCheckCompletions
+                self.pendingCheckCompletions.removeAll()
+                completions.forEach { $0(result.isHarness) }
             }
         }
-        return nil
     }
-    
+
+    private func probe(port: Int) -> ProbeResult {
+        guard let url = URL(string: "http://127.0.0.1:\(port)") else {
+            return .unavailable
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 1.0
+
+        // URLSession delivers its callback on a delegate queue, so both the
+        // timeout path and the callback path race on this box. A lock keeps the
+        // read/write ordered, and the task is cancelled if the wait expires.
+        let box = HTTPProbeBox()
+        let semaphore = DispatchSemaphore(value: 0)
+        let task = session.dataTask(with: request) { data, response, _ in
+            box.store(data: data, response: response as? HTTPURLResponse)
+            semaphore.signal()
+        }
+        task.resume()
+        let finished = semaphore.wait(timeout: .now() + 1.5) == .success
+        if !finished {
+            task.cancel()
+        }
+
+        let listenerPID = listenerPID(on: port)
+        let outcome = box.snapshot()
+        if let httpResponse = outcome.response {
+            let body = String(data: outcome.data ?? Data(), encoding: .utf8)?.lowercased() ?? ""
+            let reachable = (200...599).contains(httpResponse.statusCode)
+            if reachable, Self.harnessMarkers.contains(where: body.contains) {
+                return .harness(pid: listenerPID, startedAt: listenerPID.flatMap(processStartDate))
+            }
+            return .foreign(pid: listenerPID)
+        }
+
+        if listenerPID != nil {
+            return .foreign(pid: listenerPID)
+        }
+        return .unavailable
+    }
+
+    private func applyProbe(_ result: ProbeResult, port: Int) {
+        switch result {
+        case let .harness(pid, startedAt):
+            consecutiveProbeMisses = 0
+            let previousPID = snapshot.pid
+            var isManaged = false
+            if let record = managedRecord,
+               record.port == port,
+               record.pid == pid,
+               let startedAt,
+               abs(startedAt.timeIntervalSince(record.startedAt)) < 5 {
+                isManaged = true
+            } else if managedRecord?.port == port {
+                clearManagedRecord()
+            }
+            if previousPID != pid {
+                authenticatedURL = nil
+            }
+            updateSnapshot {
+                $0.phase = .running
+                $0.port = port
+                $0.pid = pid
+                $0.startedAt = startedAt ?? $0.startedAt
+                $0.message = isManaged ? nil : "External DeepSeek Harness service"
+                $0.isManaged = isManaged
+            }
+        case let .foreign(pid):
+            consecutiveProbeMisses = 0
+            authenticatedURL = nil
+            if managedRecord?.port == port {
+                clearManagedRecord()
+            }
+            updateSnapshot {
+                $0.phase = .portConflict
+                $0.port = port
+                $0.pid = pid
+                $0.startedAt = nil
+                $0.message = pid.map { "Port \(port) is used by PID \($0)." }
+                    ?? "Port \(port) is already in use."
+                $0.isManaged = false
+            }
+        case .unavailable:
+            if snapshot.isRunning, consecutiveProbeMisses < 1 {
+                consecutiveProbeMisses += 1
+                return
+            }
+            consecutiveProbeMisses = 0
+            authenticatedURL = nil
+            if managedRecord?.port == port {
+                clearManagedRecord()
+            }
+            updateSnapshot {
+                $0.phase = .stopped
+                $0.port = SettingsManager.shared.port
+                $0.pid = nil
+                $0.startedAt = nil
+                $0.message = nil
+                $0.isManaged = false
+            }
+        }
+    }
+
+    private func listenerPID(on port: Int) -> Int32? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        process.arguments = ["-nP", "-tiTCP:\(port)", "-sTCP:LISTEN"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return nil
+        }
+
+        let output = String(
+            data: pipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        ) ?? ""
+        return output.split(whereSeparator: \.isNewline).first.flatMap { Int32($0) }
+    }
+
+    private func processStartDate(pid: Int32) -> Date? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-p", "\(pid)", "-o", "etime="]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return nil
+        }
+
+        let elapsed = String(
+            data: pipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard let seconds = parseElapsedTime(elapsed) else { return nil }
+        return Date().addingTimeInterval(-seconds)
+    }
+
+    private func parseElapsedTime(_ value: String) -> TimeInterval? {
+        guard !value.isEmpty else { return nil }
+        let dayParts = value.split(separator: "-", maxSplits: 1).map(String.init)
+        let days: Int
+        let timePart: String
+        if dayParts.count == 2 {
+            days = Int(dayParts[0]) ?? 0
+            timePart = dayParts[1]
+        } else {
+            days = 0
+            timePart = dayParts[0]
+        }
+
+        let components = timePart.split(separator: ":").compactMap { Int($0) }
+        guard components.count == 2 || components.count == 3 else { return nil }
+        let hours = components.count == 3 ? components[0] : 0
+        let minutes = components.count == 3 ? components[1] : components[0]
+        let seconds = components.count == 3 ? components[2] : components[1]
+        return TimeInterval(days * 86_400 + hours * 3_600 + minutes * 60 + seconds)
+    }
+
+    // MARK: - Files
+
+    private static var dshDirectoryURL: URL {
+        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".dsh")
+    }
+
+    private static var managedRecordURL: URL {
+        dshDirectoryURL.appendingPathComponent("dsh-bar-service.json")
+    }
+
+    private static func loadManagedRecord() -> ManagedServiceRecord? {
+        guard let data = try? Data(contentsOf: managedRecordURL) else { return nil }
+        return try? JSONDecoder().decode(ManagedServiceRecord.self, from: data)
+    }
+
+    private func saveManagedRecord(_ record: ManagedServiceRecord) {
+        let directory = Self.dshDirectoryURL
+        try? FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        if let data = try? JSONEncoder().encode(record) {
+            try? data.write(to: Self.managedRecordURL, options: .atomic)
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: Self.managedRecordURL.path
+            )
+        }
+        managedRecord = record
+    }
+
+    private func clearManagedRecord() {
+        managedRecord = nil
+        try? FileManager.default.removeItem(at: Self.managedRecordURL)
+        try? FileManager.default.removeItem(at: pidFileURL)
+    }
+
     var logDirectory: URL {
-        let dshDir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".dsh/logs")
-        if !FileManager.default.fileExists(atPath: dshDir.path) {
-            try? FileManager.default.createDirectory(at: dshDir, withIntermediateDirectories: true)
+        let directory = Self.dshDirectoryURL.appendingPathComponent("logs")
+        if !FileManager.default.fileExists(atPath: directory.path) {
+            try? FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
         }
-        return dshDir
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        return directory
     }
-    
+
     var logFileURL: URL {
-        return logDirectory.appendingPathComponent("dsh-web.log")
+        logDirectory.appendingPathComponent("dsh-web.log")
     }
-    
-    /// Records the PID of the server this app launched, so "Stop Service" never
-    /// has to guess which process owns the port.
+
     var pidFileURL: URL {
-        let dshDir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".dsh")
-        if !FileManager.default.fileExists(atPath: dshDir.path) {
-            try? FileManager.default.createDirectory(at: dshDir, withIntermediateDirectories: true)
+        let directory = Self.dshDirectoryURL
+        if !FileManager.default.fileExists(atPath: directory.path) {
+            try? FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
         }
-        return dshDir.appendingPathComponent("dsh-web.pid")
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        return directory.appendingPathComponent("dsh-web.pid")
     }
-    
+
+    // MARK: - Service Lifecycle
+
     func startService(completion: @escaping (Bool, String?) -> Void) {
-        guard let dshPath = findDshBinary() else {
-            completion(false, "Could not find 'dsh' binary. Please make sure DeepSeek Harness is installed.")
+        guard !snapshot.phase.isBusy else {
+            completion(false, "A service operation is already in progress.")
             return
         }
-        
-        // Prepare log file
-        let logPath = logFileURL.path
-        if !FileManager.default.fileExists(atPath: logPath) {
-            FileManager.default.createFile(atPath: logPath, contents: nil)
+        authenticatedURL = nil
+        updateSnapshot {
+            $0.phase = .starting
+            $0.message = nil
         }
-        
-        let currentPort = self.port
-        let portArg = (currentPort == 3080) ? "" : "--port \(currentPort)"
-        let pidPath = pidFileURL.path
-        
-        // Launch in background
+        launchAndWait(completion: completion)
+    }
+
+    func stopService(completion: @escaping (Bool, String?) -> Void) {
+        guard !snapshot.phase.isBusy else {
+            completion(false, "A service operation is already in progress.")
+            return
+        }
+        guard snapshot.isManaged else {
+            completion(false, "This service was not started by DSH Bar, so it will not be stopped.")
+            return
+        }
+        let currentPort = snapshot.port
+        updateSnapshot {
+            $0.phase = .stopping
+            $0.message = nil
+        }
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-            
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/bash")
-            
-            // Build bash wrapper with proper PATH & locale; remember the server PID.
-            let script = """
-            export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$HOME/.local/bin:$PATH"
-            export LANG="en_US.UTF-8"
-            export LC_ALL="en_US.UTF-8"
-            nohup "\(dshPath)" web \(portArg) >> "\(logPath)" 2>&1 &
-            echo $! > "\(pidPath)"
-            """
-            process.arguments = ["-c", script]
-            
-            do {
-                try process.run()
-                process.waitUntilExit()
-            } catch {
-                DispatchQueue.main.async {
-                    completion(false, "Failed to launch process: \(error.localizedDescription)")
-                }
-                return
-            }
-            
-            // Poll for ready state up to 15 seconds
-            var ready = false
-            for _ in 0..<30 {
-                Thread.sleep(forTimeInterval: 0.5)
-                let semaphore = DispatchSemaphore(value: 0)
-                var currentRunning = false
-                self.checkStatus { isRunning in
-                    currentRunning = isRunning
-                    semaphore.signal()
-                }
-                _ = semaphore.wait(timeout: .now() + 1.0)
-                if currentRunning {
-                    ready = true
-                    break
-                }
-            }
-            
+            guard let self else { return }
+            let result = self.runStopScript(port: currentPort)
+            Thread.sleep(forTimeInterval: 0.35)
+            let probe = self.probe(port: currentPort)
             DispatchQueue.main.async {
-                if ready {
-                    completion(true, nil)
-                } else {
-                    completion(false, "Service started but timed out waiting for port \(currentPort) to respond.")
-                }
+                self.finishStop(result: result, probe: probe, port: currentPort, completion: completion)
             }
         }
     }
-    
-    /// Stops the Harness server that belongs to this app.
-    ///
-    /// Safety: the previous implementation ran `kill $(lsof -ti :port)`, which also
-    /// matched *clients* connected to the port — including the user's browser and
-    /// this app itself (it polls the port every 2s). Now only listeners are
-    /// considered, and only the PID recorded at launch or a single listener that
-    /// answers with the Harness marker is signalled. See `stopScript`.
-    func stopService(completion: @escaping (Bool, String?) -> Void) {
-        let currentPort = self.port
-        let pidPath = pidFileURL.path
-        
+
+    func restartService(completion: @escaping (Bool, String?) -> Void) {
+        guard !snapshot.phase.isBusy else {
+            completion(false, "A service operation is already in progress.")
+            return
+        }
+        guard snapshot.isManaged else {
+            completion(false, "This service was not started by DSH Bar, so it cannot be restarted safely.")
+            return
+        }
+        let previousSnapshot = snapshot
+        let previousAuthenticatedURL = authenticatedURL
+        let currentPort = snapshot.isRunning ? snapshot.port : port
+        let targetPort = port
+        authenticatedURL = nil
+        updateSnapshot {
+            $0.phase = .restarting
+            $0.message = nil
+        }
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-            
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/bash")
-            process.arguments = ["-c", Self.stopScript, "dsh-stop", pidPath, String(currentPort)]
-            
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-            
-            var output = ""
-            do {
-                try process.run()
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                output = String(data: data, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            } catch {
+            guard let self else { return }
+            if targetPort != currentPort {
+                let targetProbe = self.probe(port: targetPort)
+                if case .unavailable = targetProbe {
+                    // Safe to move the service after confirming the new port is free.
+                } else {
+                    DispatchQueue.main.async {
+                        let message = "Port \(targetPort) is already in use. The service is still running on port \(currentPort)."
+                        self.authenticatedURL = previousAuthenticatedURL
+                        self.updateSnapshot {
+                            $0 = previousSnapshot
+                            $0.message = message
+                        }
+                        completion(false, message)
+                    }
+                    return
+                }
+            }
+
+            let stopResult = self.runStopScript(port: currentPort)
+            if case let .failed(reason) = stopResult {
                 DispatchQueue.main.async {
-                    completion(false, "Failed to run stop script: \(error.localizedDescription)")
+                    let message = reason.isEmpty ? "Failed to stop the existing service." : reason
+                    self.authenticatedURL = previousAuthenticatedURL
+                    self.updateSnapshot {
+                        $0 = previousSnapshot
+                        $0.message = message
+                    }
+                    completion(false, message)
                 }
                 return
             }
-            
-            let result = output.split(separator: "\n").last.map(String.init) ?? ""
-            Thread.sleep(forTimeInterval: 0.4)
-            
-            self.checkStatus { stillRunning in
+            if case .foreign = stopResult {
                 DispatchQueue.main.async {
-                    switch result {
-                    case "STOPPED":
-                        if stillRunning {
-                            completion(false, "The server is still responding on port \(currentPort).")
-                        } else {
-                            completion(true, nil)
+                    let message = "The listener on port \(currentPort) no longer matches the service started by DSH Bar."
+                    self.clearManagedRecord()
+                    self.updateSnapshot {
+                        $0.phase = .portConflict
+                        $0.message = message
+                        $0.isManaged = false
+                    }
+                    completion(false, message)
+                }
+                return
+            }
+
+            Thread.sleep(forTimeInterval: 0.6)
+            let stoppedProbe = self.probe(port: currentPort)
+            guard case .unavailable = stoppedProbe else {
+                DispatchQueue.main.async {
+                    let message = "The old service is still listening on port \(currentPort); restart was cancelled."
+                    self.authenticatedURL = previousAuthenticatedURL
+                    self.updateSnapshot {
+                        $0 = previousSnapshot
+                        $0.message = message
+                    }
+                    completion(false, message)
+                }
+                return
+            }
+
+            DispatchQueue.main.async {
+                self.clearManagedRecord()
+                self.launchAndWait(completion: completion)
+            }
+        }
+    }
+
+    private func launchAndWait(completion: @escaping (Bool, String?) -> Void) {
+        let currentPort = port
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            guard let dshPath = self.findDshBinary() else {
+                DispatchQueue.main.async {
+                    let message = "DeepSeek Harness CLI is not installed. Install it with: \(Self.installCommand)"
+                    self.updateSnapshot {
+                        $0.phase = .error
+                        $0.dshPath = nil
+                        $0.dshVersion = nil
+                        $0.message = message
+                    }
+                    completion(false, message)
+                }
+                return
+            }
+
+            let version = self.readDshVersion(at: dshPath)
+            do {
+                let launchedAt = Date()
+                let (process, logHandle, logOffset) = try self.launchProcess(path: dshPath, port: currentPort)
+                var finalProbe: ProbeResult = .unavailable
+                for _ in 0..<30 {
+                    Thread.sleep(forTimeInterval: 0.5)
+                    finalProbe = self.probe(port: currentPort)
+                    if finalProbe.isHarness { break }
+                    if case .foreign = finalProbe, !process.isRunning { break }
+                }
+                let launchAuthenticatedURL = self.captureAuthenticatedURL(
+                    port: currentPort,
+                    fromLogOffset: logOffset
+                )
+
+                DispatchQueue.main.async {
+                    self.launchedProcess = process
+                    self.launchedLogHandle = logHandle
+                    self.updateSnapshot {
+                        $0.dshPath = dshPath
+                        $0.dshVersion = version
+                    }
+
+                    switch finalProbe {
+                    case let .harness(pid, detectedStart):
+                        guard pid == process.processIdentifier else {
+                            if process.isRunning { process.terminate() }
+                            self.clearManagedRecord()
+                            let message = "Port \(currentPort) is already served by a different DeepSeek Harness process."
+                            self.updateSnapshot {
+                                $0.phase = .portConflict
+                                $0.port = currentPort
+                                $0.pid = pid
+                                $0.startedAt = detectedStart
+                                $0.message = message
+                                $0.isManaged = false
+                            }
+                            completion(false, message)
+                            return
                         }
-                    case "FOREIGN-LISTENER":
-                        completion(false, "Port \(currentPort) is in use by another application, not DeepSeek Harness. Nothing was stopped.")
-                    case "NONE":
-                        completion(!stillRunning, stillRunning
-                            ? "Could not identify the DeepSeek Harness process on port \(currentPort)."
-                            : "DeepSeek Harness is not running on port \(currentPort).")
-                    default:
-                        completion(!stillRunning, stillRunning
-                            ? "Failed to stop the service on port \(currentPort)."
-                            : nil)
+                        let record = ManagedServiceRecord(
+                            pid: process.processIdentifier,
+                            port: currentPort,
+                            startedAt: launchedAt,
+                            executablePath: dshPath
+                        )
+                        self.saveManagedRecord(record)
+                        self.authenticatedURL = launchAuthenticatedURL
+                        self.updateSnapshot {
+                            $0.phase = .running
+                            $0.port = currentPort
+                            $0.pid = process.processIdentifier
+                            $0.startedAt = detectedStart ?? launchedAt
+                            $0.message = SettingsManager.shared.port == currentPort
+                                ? nil
+                                : "Configured port changed to \(SettingsManager.shared.port). Restart to apply it."
+                            $0.isManaged = true
+                        }
+                        completion(true, nil)
+                    case let .foreign(pid):
+                        if process.isRunning { process.terminate() }
+                        self.clearManagedRecord()
+                        let message = pid.map { "Port \(currentPort) is used by PID \($0)." }
+                            ?? "Port \(currentPort) is already in use."
+                        self.updateSnapshot {
+                            $0.phase = .portConflict
+                            $0.pid = pid
+                            $0.startedAt = nil
+                            $0.message = message
+                            $0.isManaged = false
+                        }
+                        completion(false, message)
+                    case .unavailable:
+                        if process.isRunning { process.terminate() }
+                        self.clearManagedRecord()
+                        let message = "Service did not become ready on port \(currentPort). Check the live logs for details."
+                        self.updateSnapshot {
+                            $0.phase = .error
+                            $0.pid = nil
+                            $0.startedAt = nil
+                            $0.message = message
+                            $0.isManaged = false
+                        }
+                        completion(false, message)
                     }
                 }
+            } catch {
+                DispatchQueue.main.async {
+                    let message = "Failed to launch DSH: \(error.localizedDescription)"
+                    self.updateSnapshot {
+                        $0.phase = .error
+                        $0.message = message
+                    }
+                    completion(false, message)
+                }
             }
         }
     }
-    
-    /// Finds the right process without ever touching an unrelated one.
-    /// Prints exactly one of: STOPPED / FOREIGN-LISTENER / NONE.
-    ///
-    /// Identification is deliberately dependency-free: the recorded PID is only
-    /// trusted while it still owns the port, and a manually started server is
-    /// adopted only when the port answers with the Harness marker AND exactly one
-    /// process listens on it. Clients (browser, this app) are never candidates.
+
+    private func launchProcess(path: String, port: Int) throws -> (Process, FileHandle, UInt64) {
+        let logURL = logFileURL
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            FileManager.default.createFile(
+                atPath: logURL.path,
+                contents: nil,
+                attributes: [.posixPermissions: 0o600]
+            )
+        }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: logURL.path)
+        let logHandle = try FileHandle(forWritingTo: logURL)
+        let logOffset = logHandle.seekToEndOfFile()
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = ["web", "--no-open"] + (port == 3080 ? [] : ["--port", "\(port)"])
+        process.environment = Self.commandEnvironment()
+        process.standardOutput = logHandle
+        process.standardError = logHandle
+        try process.run()
+
+        try "\(process.processIdentifier)\n".write(
+            to: pidFileURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pidFileURL.path)
+        return (process, logHandle, logOffset)
+    }
+
+    private func runStopScript(port: Int) -> StopResult {
+        let startEpoch = managedRecord.map { "\(Int($0.startedAt.timeIntervalSince1970))" } ?? ""
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [
+            "-c", Self.stopScript,
+            "dsh-stop",
+            pidFileURL.path,
+            "\(port)",
+            startEpoch
+        ]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            let result = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(separator: "\n")
+                .last
+                .map(String.init) ?? ""
+            switch result {
+            case "STOPPED": return .stopped
+            case "FOREIGN-LISTENER", "UNVERIFIED-PID": return .foreign
+            case "NONE": return .none
+            default: return .failed(result)
+            }
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+    }
+
+    private func finishStop(
+        result: StopResult,
+        probe: ProbeResult,
+        port: Int,
+        completion: @escaping (Bool, String?) -> Void
+    ) {
+        switch (result, probe) {
+        case (_, .harness):
+            let message = "The DeepSeek Harness service is still responding on port \(port)."
+            updateSnapshot {
+                $0.phase = .error
+                $0.message = message
+            }
+            completion(false, message)
+        case (.foreign, _), (_, .foreign):
+            let message = "Port \(port) is used by another application. Nothing was stopped."
+            // The recorded process is gone or no longer owns the port, so the
+            // stored identity must not survive to a future launch.
+            clearManagedRecord()
+            updateSnapshot {
+                $0.phase = .portConflict
+                $0.startedAt = nil
+                $0.message = message
+                $0.isManaged = false
+            }
+            completion(false, message)
+        case let (.failed(reason), _):
+            let message = reason.isEmpty ? "Failed to stop the service." : reason
+            updateSnapshot {
+                $0.phase = .error
+                $0.message = message
+            }
+            completion(false, message)
+        default:
+            launchedProcess = nil
+            launchedLogHandle?.closeFile()
+            launchedLogHandle = nil
+            authenticatedURL = nil
+            // Drop the persisted identity too, so a later launch never probes or
+            // claims a port that this app has already released.
+            clearManagedRecord()
+            updateSnapshot {
+                $0.phase = .stopped
+                $0.port = SettingsManager.shared.port
+                $0.pid = nil
+                $0.startedAt = nil
+                $0.message = nil
+                $0.isManaged = false
+            }
+            completion(true, nil)
+        }
+    }
+
     private static let stopScript = """
-    PIDFILE="$1"; PORT="$2"
+    PIDFILE="$1"; PORT="$2"; START_EPOCH="$3"
     export PATH="/usr/sbin:/sbin:/usr/bin:/bin:/opt/homebrew/bin:$PATH"
 
-    is_harness_http() {
-      body=$(curl -s --max-time 2 "http://127.0.0.1:$PORT/" 2>/dev/null | head -c 4096 | tr 'A-Z' 'a-z')
-      case "$body" in
-        *"dsh web"*|*"__dsh_boot__"*|*"deepseek harness"*) return 0 ;;
-        *) return 1 ;;
+    etime_seconds() {
+      t="$1"
+      [ -n "$t" ] || { echo ""; return; }
+      d=0
+      case "$t" in
+        *-*) d="${t%%-*}"; t="${t#*-}" ;;
+      esac
+      oldIFS="$IFS"; IFS=:
+      set -- $t
+      IFS="$oldIFS"
+      case $# in
+        3) echo $(( d * 86400 + $1 * 3600 + $2 * 60 + $3 )) ;;
+        2) echo $(( d * 86400 + $1 * 60 + $2 )) ;;
+        *) echo "" ;;
       esac
     }
 
-    listeners=$(lsof -ti :"$PORT" -sTCP:LISTEN 2>/dev/null || true)
-    targets=""
-
-    # 1) The server this app launched, as long as it still owns the port.
+    # Only the process this app recorded is a candidate. Anything else on the
+    # port is reported as foreign and left completely alone.
+    p=""
     if [ -f "$PIDFILE" ]; then
-      p=$(tr -dc '0-9' < "$PIDFILE" 2>/dev/null || true)
-      if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
+      candidate=$(tr -dc '0-9' < "$PIDFILE" 2>/dev/null || true)
+      if [ -n "$candidate" ] && kill -0 "$candidate" 2>/dev/null; then
+        listeners=$(lsof -ti :"$PORT" -sTCP:LISTEN 2>/dev/null || true)
         case " $listeners " in
-          *" $p "*) targets="$p" ;;
+          *" $candidate "*) p="$candidate" ;;
         esac
       fi
     fi
 
-    # 2) Otherwise adopt the sole listener, but only if it really is Harness.
-    if [ -z "$targets" ] && [ -n "$listeners" ]; then
-      count=$(printf '%s\\n' $listeners | wc -l | tr -d ' ')
-      if [ "$count" = "1" ] && is_harness_http; then targets="$listeners"; fi
-    fi
-
-    if [ -z "$targets" ]; then
+    if [ -z "$p" ]; then
       rm -f "$PIDFILE"
-      if [ -n "$listeners" ]; then echo "FOREIGN-LISTENER"; exit 5; fi
+      if [ -n "$(lsof -ti :"$PORT" -sTCP:LISTEN 2>/dev/null || true)" ]; then
+        echo "FOREIGN-LISTENER"; exit 5
+      fi
       echo "NONE"; exit 4
     fi
 
-    kill $targets 2>/dev/null || true
+    # Guard against PID reuse: the live process start time must match the
+    # recorded launch time, otherwise this is a different process. A missing
+    # fingerprint is treated as unverifiable rather than as "no check needed".
+    if [ -z "$START_EPOCH" ]; then
+      echo "UNVERIFIED-PID"; exit 6
+    fi
+    actual=$(ps -p "$p" -o etime= 2>/dev/null | tr -d ' ')
+    actual_s=$(etime_seconds "$actual")
+    if [ -z "$actual_s" ]; then
+      echo "UNVERIFIED-PID"; exit 6
+    fi
+    now=$(date +%s)
+    expected=$(( now - START_EPOCH ))
+    drift=$(( actual_s - expected ))
+    [ "$drift" -lt 0 ] && drift=$(( -drift ))
+    if [ "$drift" -gt 30 ]; then
+      echo "UNVERIFIED-PID"; exit 6
+    fi
+
+    kill "$p" 2>/dev/null || true
     i=0
     while [ $i -lt 20 ]; do
-      [ -z "$(lsof -ti :"$PORT" -sTCP:LISTEN 2>/dev/null || true)" ] && break
+      kill -0 "$p" 2>/dev/null || break
       sleep 0.15
       i=$((i + 1))
     done
-    if [ -n "$(lsof -ti :"$PORT" -sTCP:LISTEN 2>/dev/null || true)" ]; then
-      kill -9 $targets 2>/dev/null || true
+    if kill -0 "$p" 2>/dev/null; then
+      kill -9 "$p" 2>/dev/null || true
       sleep 0.3
     fi
     rm -f "$PIDFILE"
     echo "STOPPED"
     exit 0
     """
-    
-    func restartService(completion: @escaping (Bool, String?) -> Void) {
-        stopService { [weak self] stopped, message in
-            guard let self = self else { return }
-            // A foreign process on the port is a hard stop; report instead of
-            // racing it with a doomed start.
-            if !stopped, let message = message, message.contains("not DeepSeek Harness") {
-                completion(false, message)
-                return
-            }
-            Thread.sleep(forTimeInterval: 0.8)
-            self.startService(completion: completion)
-        }
-    }
-    
+
+    // MARK: - User Actions
+
     func openBrowser() {
-        NSWorkspace.shared.open(baseUrl)
+        // Only the token captured from this app's own launch is trusted. A
+        // token mined from historical log text could belong to a dead process.
+        NSWorkspace.shared.open(authenticatedURL ?? baseUrl)
     }
-    
-    func openLogs() {
-        let logPath = logFileURL.path
-        if FileManager.default.fileExists(atPath: logPath) {
-            NSWorkspace.shared.open(logFileURL)
-        } else {
-            if let consoleApp = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Console") {
-                NSWorkspace.shared.openApplication(at: consoleApp, configuration: NSWorkspace.OpenConfiguration())
+
+    /// DSH prints a process-token URL when it starts with `--no-open`. Only the
+    /// bytes appended by *this* launch are scanned, and the token is kept in
+    /// memory — it is never shown in the UI, the clipboard, or written elsewhere.
+    private func captureAuthenticatedURL(port: Int, fromLogOffset offset: UInt64) -> URL? {
+        Self.extractAuthenticatedURL(port: port, fromLogOffset: offset)
+    }
+
+    private static func extractAuthenticatedURL(port: Int, fromLogOffset offset: UInt64) -> URL? {
+        let url = ServiceManager.shared.logFileURL
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let sizeValue = attributes[.size] as? NSNumber,
+              let handle = try? FileHandle(forReadingFrom: url) else {
+            return nil
+        }
+
+        let size = sizeValue.uint64Value
+        // If the file was rotated or truncated, only the current tail is usable.
+        let start = size >= offset ? offset : (size > 131_072 ? size - 131_072 : 0)
+        handle.seek(toFileOffset: start)
+        let data = handle.readDataToEndOfFile()
+        handle.closeFile()
+        var text = String(decoding: data, as: UTF8.self)
+        if let ansiRegex = try? NSRegularExpression(pattern: "\\u001B\\[[0-9;]*[A-Za-z]") {
+            text = ansiRegex.stringByReplacingMatches(
+                in: text,
+                range: NSRange(text.startIndex..., in: text),
+                withTemplate: ""
+            )
+        }
+
+        let pattern = "https?://(?:127\\.0\\.0\\.1|localhost):\(port)[^\\s\\\"']*"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return nil
+        }
+        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+        var cleanFallback: URL?
+        for match in matches.reversed() {
+            guard let range = Range(match.range, in: text),
+                  let candidate = URL(string: String(text[range])),
+                  let components = URLComponents(url: candidate, resolvingAgainstBaseURL: false),
+                  components.port == port,
+                  let host = components.host?.lowercased(),
+                  host == "127.0.0.1" || host == "localhost" else {
+                continue
             }
+            if components.query != nil {
+                return candidate
+            }
+            cleanFallback = cleanFallback ?? candidate
+        }
+        return cleanFallback
+    }
+
+    /// Replaces the process token in log text so the exported/shared view never
+    /// leaks it. Used by the live log window and the log redaction preview.
+    static func redactingProcessTokens(in text: String) -> String {
+        guard let regex = try? NSRegularExpression(
+            pattern: "(https?://(?:127\\.0\\.0\\.1|localhost):[0-9]+/)[?][^\\s\\\"']*",
+            options: [.caseInsensitive]
+        ) else {
+            return text
+        }
+        return regex.stringByReplacingMatches(
+            in: text,
+            range: NSRange(text.startIndex..., in: text),
+            withTemplate: "$1<redacted>"
+        )
+    }
+
+    func revealLogFile() {
+        let url = logFileURL
+        if FileManager.default.fileExists(atPath: url.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            NSWorkspace.shared.open(logDirectory)
         }
     }
-    
+
     func copyURLToClipboard() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(baseUrl.absoluteString, forType: .string)
+    }
+}
+
+/// Thread-safe holder for the result of a bounded HTTP probe. The URLSession
+/// callback and the `probe(port:)` timeout path both touch it, so access is
+/// serialized instead of relying on unsynchronized value capture.
+private final class HTTPProbeBox {
+    private let lock = NSLock()
+    private var data: Data?
+    private var response: HTTPURLResponse?
+
+    func store(data: Data?, response: HTTPURLResponse?) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.data = data
+        self.response = response
+    }
+
+    func snapshot() -> (data: Data?, response: HTTPURLResponse?) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (data, response)
     }
 }

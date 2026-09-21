@@ -1,0 +1,222 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing vMAJOR.MINOR.PATCH tag to build and release"
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-14
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve release metadata
+        id: meta
+        env:
+          RAW_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RAW_TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "Expected a vMAJOR.MINOR.PATCH tag, got: $RAW_TAG" >&2
+            exit 1
+          fi
+          VERSION="${BASH_REMATCH[1]}"
+          git show-ref --verify --quiet "refs/tags/$RAW_TAG"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "$RAW_TAG^{commit}")"
+          echo "tag=$RAW_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "zip=DSH-Bar-${VERSION}-universal.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Show toolchain
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun swiftc --version
+          xcrun --sdk macosx --show-sdk-version
+
+      # When the Developer ID secrets are configured the release is signed and
+      # notarized. Without them the build stays ad-hoc signed and the release
+      # notes say so explicitly, so nobody assumes Gatekeeper will accept it.
+      - name: Import Developer ID certificate
+        id: signing
+        env:
+          CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${CERT_P12_BASE64:-}" || -z "${CERT_PASSWORD:-}" ]]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Developer ID secrets are not configured; the app will be ad-hoc signed."
+            exit 0
+          fi
+
+          KEYCHAIN_PATH="$RUNNER_TEMP/dshbar-signing.keychain-db"
+          KEYCHAIN_PASS="${KEYCHAIN_PASSWORD:-dshbar-ci}"
+          CERT_PATH="$RUNNER_TEMP/developer-id.p12"
+
+          printf '%s' "$CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$CERT_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | awk -F'"' '/Developer ID Application/{print $2; exit}')"
+          if [[ -z "$IDENTITY" ]]; then
+            echo "No Developer ID Application identity found in the imported certificate." >&2
+            exit 1
+          fi
+
+          rm -f "$CERT_PATH"
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+          echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
+          echo "keychain=$KEYCHAIN_PATH" >> "$GITHUB_OUTPUT"
+          echo "Signing identity: $IDENTITY"
+
+      - name: Build universal app
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          BUILD_NUMBER: ${{ steps.meta.outputs.version }}
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+          ARCHS: "arm64 x86_64"
+          SIGNING_IDENTITY: ${{ steps.signing.outputs.identity }}
+        run: ./build.sh
+
+      - name: Verify and package
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          ZIP_NAME: ${{ steps.meta.outputs.zip }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="build/DSH Bar.app"
+          BIN="$APP/Contents/MacOS/dsh-bar"
+
+          test -d "$APP"
+          test -x "$BIN"
+          lipo "$BIN" -verify_arch arm64
+          lipo "$BIN" -verify_arch x86_64
+          test "$(plutil -extract LSMinimumSystemVersion raw "$APP/Contents/Info.plist")" = "13.0"
+          test "$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")" = "$VERSION"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          mkdir -p dist
+          ditto -c -k --keepParent --norsrc --noextattr --noqtn --noacl \
+            "$APP" "dist/$ZIP_NAME"
+          (cd dist && shasum -a 256 "$ZIP_NAME" > "$ZIP_NAME.sha256")
+
+      - name: Notarize and staple
+        if: steps.signing.outputs.configured == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          ZIP_NAME: ${{ steps.meta.outputs.zip }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${APPLE_ID:-}" || -z "${APPLE_TEAM_ID:-}" || -z "${APPLE_APP_PASSWORD:-}" ]]; then
+            echo "Signing is configured but notarization credentials are missing." >&2
+            exit 1
+          fi
+
+          xcrun notarytool submit "dist/$ZIP_NAME" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait
+
+          xcrun stapler staple "build/DSH Bar.app"
+          xcrun stapler validate "build/DSH Bar.app"
+          spctl --assess --type execute --verbose=4 "build/DSH Bar.app"
+
+          # Re-package so the shipped archive contains the stapled ticket.
+          rm -f "dist/$ZIP_NAME" "dist/$ZIP_NAME.sha256"
+          ditto -c -k --keepParent --norsrc --noextattr --noqtn --noacl \
+            "build/DSH Bar.app" "dist/$ZIP_NAME"
+          (cd dist && shasum -a 256 "$ZIP_NAME" > "$ZIP_NAME.sha256")
+
+      - name: Write release notes
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          ZIP_NAME: ${{ steps.meta.outputs.zip }}
+          SIGNED: ${{ steps.signing.outputs.configured }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          NOTES="dist/release-notes.md"
+          {
+            printf '### Installation\n\n'
+            printf '1. Download and unzip `%s`.\n' "$ZIP_NAME"
+            printf '2. Move **DSH Bar.app** into `/Applications` and open it.\n'
+            printf '3. Verify the download against `%s.sha256`.\n\n' "$ZIP_NAME"
+            if [[ "$SIGNED" == "true" ]]; then
+              printf 'This build is signed with a Developer ID certificate and notarized by Apple.\n'
+            else
+              printf '> **This build is not notarized.** macOS may report it as damaged after download.\n'
+              printf '> Clear the quarantine attribute first:\n\n'
+              printf '```bash\nxattr -cr "/Applications/DSH Bar.app"\n```\n'
+            fi
+          } > "$NOTES"
+          cat "$NOTES"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-bar-${{ steps.meta.outputs.version }}-universal
+          path: |
+            dist/${{ steps.meta.outputs.zip }}
+            dist/${{ steps.meta.outputs.zip }}.sha256
+          if-no-files-found: error
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          ZIP_NAME: ${{ steps.meta.outputs.zip }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" \
+              "dist/$ZIP_NAME" "dist/$ZIP_NAME.sha256" --clobber
+          else
+            prerelease_args=()
+            if [[ "$TAG" == v0.* ]]; then
+              prerelease_args+=(--prerelease)
+            fi
+            gh release create "$TAG" \
+              "dist/$ZIP_NAME" "dist/$ZIP_NAME.sha256" \
+              --verify-tag \
+              --title "DSH Bar $TAG" \
+              --notes-file dist/release-notes.md \
+              "${prerelease_args[@]}"
+          fi
