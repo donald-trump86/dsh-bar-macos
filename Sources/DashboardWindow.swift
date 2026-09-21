@@ -23,8 +23,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     // Preferences UI
     private let portField = NSTextField()
     private let portResetButton = NSButton()
-    private let launchAtLoginCheckbox = NSButton(checkboxWithTitle: "Launch at login (开机自动在后台启动)", target: nil, action: nil)
-    private let autoOpenCheckbox = NSButton(checkboxWithTitle: "Auto open Web on launch (启动时自动拉起网页)", target: nil, action: nil)
+    private let launchAtLoginCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let hotKeyButton = NSButton()
     private let hotKeyResetButton = NSButton()
     
@@ -36,7 +35,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 480, height: 580),
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 580),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -75,237 +74,429 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     
     private func setupUI() {
         guard let window = self.window else { return }
-        
-        // 1. Frosted Glass Vibrancy Background
-        let visualEffect = NSVisualEffectView(frame: window.contentView!.bounds)
-        visualEffect.autoresizingMask = [.width, .height]
+
+        let visualEffect = NSVisualEffectView()
         visualEffect.material = .hudWindow
         visualEffect.blendingMode = .behindWindow
         visualEffect.state = .active
         window.contentView = visualEffect
-        
-        // ==========================================
-        // 2. HERO HEADER SECTION
-        // ==========================================
-        let iconView = NSImageView(frame: NSRect(x: 28, y: 486, width: 68, height: 68))
+
+        let header = makeHeaderView()
+        let serviceCard = makeServiceCard()
+        let preferencesCard = makePreferencesCard()
+        let footer = makeFooterView()
+        [header, serviceCard, preferencesCard, footer].forEach {
+            $0.translatesAutoresizingMaskIntoConstraints = false
+            visualEffect.addSubview($0)
+        }
+
+        NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: visualEffect.topAnchor, constant: 34),
+            header.leadingAnchor.constraint(equalTo: visualEffect.leadingAnchor, constant: 24),
+            header.trailingAnchor.constraint(equalTo: visualEffect.trailingAnchor, constant: -24),
+            header.heightAnchor.constraint(equalToConstant: 72),
+
+            serviceCard.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 14),
+            serviceCard.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+            serviceCard.trailingAnchor.constraint(equalTo: header.trailingAnchor),
+            serviceCard.heightAnchor.constraint(equalToConstant: 132),
+
+            preferencesCard.topAnchor.constraint(equalTo: serviceCard.bottomAnchor, constant: 14),
+            preferencesCard.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+            preferencesCard.trailingAnchor.constraint(equalTo: header.trailingAnchor),
+            preferencesCard.heightAnchor.constraint(equalToConstant: 230),
+
+            footer.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+            footer.trailingAnchor.constraint(equalTo: header.trailingAnchor),
+            footer.bottomAnchor.constraint(equalTo: visualEffect.bottomAnchor, constant: -18),
+            footer.heightAnchor.constraint(equalToConstant: 32)
+        ])
+
+        updateUrlDisplay(port: SettingsManager.shared.port)
+    }
+
+    private func makeHeaderView() -> NSView {
+        let header = NSView()
+
+        let iconView = NSImageView()
         if let iconPath = Bundle.main.path(forResource: "icon", ofType: "png"),
            let icon = NSImage(contentsOfFile: iconPath) {
             iconView.image = icon
         } else {
             iconView.image = NSApplication.shared.applicationIconImage
         }
-        visualEffect.addSubview(iconView)
-        
-        // Title & Version
-        let titleLabel = NSTextField(labelWithString: "DeepSeek Harness")
-        titleLabel.font = NSFont.systemFont(ofSize: 20, weight: .bold)
-        titleLabel.frame = NSRect(x: 110, y: 524, width: 230, height: 26)
-        visualEffect.addSubview(titleLabel)
-        
-        let subTitleLabel = NSTextField(labelWithString: "Menu Bar Companion • v1.0.0")
-        subTitleLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        subTitleLabel.textColor = .secondaryLabelColor
-        subTitleLabel.frame = NSRect(x: 110, y: 504, width: 230, height: 18)
-        visualEffect.addSubview(subTitleLabel)
-        
-        // Status Badge Capsule (Top Right)
-        statusBadge.frame = NSRect(x: 310, y: 508, width: 142, height: 28)
+        iconView.imageScaling = .scaleProportionallyUpOrDown
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        header.addSubview(iconView)
+
+        let titleLabel = makeLabel("DeepSeek Harness", size: 20, weight: .bold)
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.1"
+        let subtitleLabel = makeLabel("Menu Bar Companion  •  v\(version)", size: 12, weight: .medium, color: .secondaryLabelColor)
+        subtitleLabel.lineBreakMode = .byTruncatingTail
+
+        let titleStack = NSStackView(views: [titleLabel, subtitleLabel])
+        titleStack.orientation = .vertical
+        titleStack.alignment = .leading
+        titleStack.spacing = 2
+        titleStack.translatesAutoresizingMaskIntoConstraints = false
+        titleStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        header.addSubview(titleStack)
+
+        statusBadge.translatesAutoresizingMaskIntoConstraints = false
         statusBadge.boxType = .custom
         statusBadge.cornerRadius = 14
         statusBadge.borderWidth = 1
-        
-        // Inner Dot inside status badge
-        statusDot.frame = NSRect(x: 10, y: 9, width: 10, height: 10)
+        header.addSubview(statusBadge)
+
+        statusDot.translatesAutoresizingMaskIntoConstraints = false
         statusDot.boxType = .custom
         statusDot.cornerRadius = 5
         statusDot.borderWidth = 0
         statusBadge.addSubview(statusDot)
-        
-        statusText.frame = NSRect(x: 26, y: 5, width: 110, height: 18)
+
+        statusText.translatesAutoresizingMaskIntoConstraints = false
         statusText.font = NSFont.systemFont(ofSize: 11, weight: .bold)
+        statusText.lineBreakMode = .byTruncatingTail
         statusBadge.addSubview(statusText)
-        visualEffect.addSubview(statusBadge)
-        
-        // ==========================================
-        // 3. CARD 1: SERVICE CONTROL PANEL
-        // ==========================================
-        let card1 = createCardBox(frame: NSRect(x: 24, y: 340, width: 432, height: 132))
-        visualEffect.addSubview(card1)
-        
-        let card1Title = NSTextField(labelWithString: "LOCAL WEB CONSOLE")
-        card1Title.font = NSFont.systemFont(ofSize: 11, weight: .bold)
-        card1Title.textColor = .tertiaryLabelColor
-        card1Title.frame = NSRect(x: 16, y: 104, width: 300, height: 16)
-        card1.addSubview(card1Title)
-        
-        // URL Inner Container Bar
-        let urlContainer = NSBox(frame: NSRect(x: 14, y: 58, width: 404, height: 38))
-        urlContainer.boxType = .custom
-        urlContainer.cornerRadius = 8
-        urlContainer.fillColor = NSColor.textColor.withAlphaComponent(0.06)
-        urlContainer.borderColor = NSColor.separatorColor.withAlphaComponent(0.2)
-        urlContainer.borderWidth = 1
-        
+
+        NSLayoutConstraint.activate([
+            iconView.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 4),
+            iconView.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 64),
+            iconView.heightAnchor.constraint(equalToConstant: 64),
+
+            titleStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 14),
+            titleStack.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            titleStack.trailingAnchor.constraint(lessThanOrEqualTo: statusBadge.leadingAnchor, constant: -12),
+
+            statusBadge.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -4),
+            statusBadge.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            statusBadge.widthAnchor.constraint(equalToConstant: 150),
+            statusBadge.heightAnchor.constraint(equalToConstant: 28),
+
+            statusDot.leadingAnchor.constraint(equalTo: statusBadge.leadingAnchor, constant: 11),
+            statusDot.centerYAnchor.constraint(equalTo: statusBadge.centerYAnchor),
+            statusDot.widthAnchor.constraint(equalToConstant: 10),
+            statusDot.heightAnchor.constraint(equalToConstant: 10),
+
+            statusText.leadingAnchor.constraint(equalTo: statusDot.trailingAnchor, constant: 7),
+            statusText.trailingAnchor.constraint(equalTo: statusBadge.trailingAnchor, constant: -10),
+            statusText.centerYAnchor.constraint(equalTo: statusBadge.centerYAnchor)
+        ])
+
+        return header
+    }
+
+    private func makeServiceCard() -> NSView {
+        let card = makeCardView()
+        let title = makeSectionTitle("LOCAL WEB CONSOLE")
+        card.addSubview(title)
+
+        let urlContainer = makeInsetView()
+        urlContainer.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(urlContainer)
+
+        urlLabel.translatesAutoresizingMaskIntoConstraints = false
         urlLabel.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .medium)
         urlLabel.textColor = .labelColor
-        urlLabel.frame = NSRect(x: 14, y: 10, width: 280, height: 18)
+        urlLabel.lineBreakMode = .byTruncatingMiddle
         urlContainer.addSubview(urlLabel)
-        
+
         copyButton.title = "Copy"
-        copyButton.bezelStyle = .inline
+        copyButton.bezelStyle = .rounded
+        copyButton.controlSize = .small
         copyButton.target = self
         copyButton.action = #selector(didClickCopy)
-        copyButton.frame = NSRect(x: 324, y: 7, width: 70, height: 24)
+        copyButton.translatesAutoresizingMaskIntoConstraints = false
         urlContainer.addSubview(copyButton)
-        card1.addSubview(urlContainer)
-        
-        // Action Buttons Row (3 buttons)
-        openButton.title = "Open Web"
-        openButton.bezelStyle = .rounded
+
+        configureActionButton(openButton, title: "Open Web", action: #selector(didClickOpen))
         openButton.keyEquivalent = "\r"
-        openButton.target = self
-        openButton.action = #selector(didClickOpen)
-        openButton.frame = NSRect(x: 10, y: 10, width: 136, height: 36)
-        card1.addSubview(openButton)
-        
-        toggleButton.bezelStyle = .rounded
-        toggleButton.target = self
-        toggleButton.action = #selector(didClickToggle)
-        toggleButton.frame = NSRect(x: 148, y: 10, width: 140, height: 36)
-        card1.addSubview(toggleButton)
-        
-        restartButton.title = "Restart"
-        restartButton.bezelStyle = .rounded
-        restartButton.target = self
-        restartButton.action = #selector(didClickRestart)
-        restartButton.frame = NSRect(x: 290, y: 10, width: 132, height: 36)
-        card1.addSubview(restartButton)
-        
-        // ==========================================
-        // 4. CARD 2: PREFERENCES & SHORTCUTS
-        // ==========================================
-        let card2 = createCardBox(frame: NSRect(x: 24, y: 74, width: 432, height: 252))
-        visualEffect.addSubview(card2)
-        
-        let card2Title = NSTextField(labelWithString: "PREFERENCES & CONFIGURATION")
-        card2Title.font = NSFont.systemFont(ofSize: 11, weight: .bold)
-        card2Title.textColor = .tertiaryLabelColor
-        card2Title.frame = NSRect(x: 16, y: 224, width: 300, height: 16)
-        card2.addSubview(card2Title)
-        
-        // --- Row 1: Port Setting ---
-        let portTitle = NSTextField(labelWithString: "Server Port")
-        portTitle.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        portTitle.frame = NSRect(x: 16, y: 190, width: 100, height: 18)
-        card2.addSubview(portTitle)
-        
-        let portDesc = NSTextField(labelWithString: "Standard: 3080")
-        portDesc.font = NSFont.systemFont(ofSize: 11, weight: .regular)
-        portDesc.textColor = .secondaryLabelColor
-        portDesc.frame = NSRect(x: 16, y: 172, width: 140, height: 16)
-        card2.addSubview(portDesc)
-        
+        configureActionButton(toggleButton, title: "Start Service", action: #selector(didClickToggle))
+        configureActionButton(restartButton, title: "Restart", action: #selector(didClickRestart))
+
+        let actions = NSStackView(views: [openButton, toggleButton, restartButton])
+        actions.orientation = .horizontal
+        actions.alignment = .centerY
+        actions.distribution = .fillEqually
+        actions.spacing = 8
+        actions.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(actions)
+
+        NSLayoutConstraint.activate([
+            title.topAnchor.constraint(equalTo: card.topAnchor, constant: 15),
+            title.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 18),
+            title.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -18),
+
+            urlContainer.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 9),
+            urlContainer.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            urlContainer.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            urlContainer.heightAnchor.constraint(equalToConstant: 40),
+
+            urlLabel.leadingAnchor.constraint(equalTo: urlContainer.leadingAnchor, constant: 14),
+            urlLabel.centerYAnchor.constraint(equalTo: urlContainer.centerYAnchor),
+            urlLabel.trailingAnchor.constraint(lessThanOrEqualTo: copyButton.leadingAnchor, constant: -10),
+
+            copyButton.trailingAnchor.constraint(equalTo: urlContainer.trailingAnchor, constant: -8),
+            copyButton.centerYAnchor.constraint(equalTo: urlContainer.centerYAnchor),
+            copyButton.widthAnchor.constraint(equalToConstant: 68),
+            copyButton.heightAnchor.constraint(equalToConstant: 26),
+
+            actions.topAnchor.constraint(equalTo: urlContainer.bottomAnchor, constant: 10),
+            actions.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            actions.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            actions.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -13),
+            actions.heightAnchor.constraint(equalToConstant: 32)
+        ])
+
+        return card
+    }
+
+    private func makePreferencesCard() -> NSView {
+        let card = makeCardView()
+        let title = makeSectionTitle("PREFERENCES & CONFIGURATION")
+        card.addSubview(title)
+
+        let portRow = NSView()
+        portRow.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(portRow)
+
+        let portText = makeTextStack(title: "Server Port", description: "Default: 3080")
+        portRow.addSubview(portText)
+
         portField.stringValue = "\(SettingsManager.shared.port)"
-        portField.frame = NSRect(x: 270, y: 178, width: 72, height: 26)
         portField.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .medium)
         portField.alignment = .center
         portField.delegate = self
-        card2.addSubview(portField)
-        
+        portField.translatesAutoresizingMaskIntoConstraints = false
+
         portResetButton.title = "Default"
-        portResetButton.bezelStyle = .inline
+        portResetButton.bezelStyle = .rounded
+        portResetButton.controlSize = .small
         portResetButton.target = self
         portResetButton.action = #selector(didResetPort)
-        portResetButton.frame = NSRect(x: 350, y: 180, width: 66, height: 24)
-        card2.addSubview(portResetButton)
-        
-        let sep1 = createCardSeparator(y: 160, width: 400)
-        card2.addSubview(sep1)
-        
-        // --- Row 2: Global Hotkey ---
-        let hotKeyTitle = NSTextField(labelWithString: "Global Shortcut")
-        hotKeyTitle.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        hotKeyTitle.frame = NSRect(x: 16, y: 126, width: 120, height: 18)
-        card2.addSubview(hotKeyTitle)
-        
-        let hotKeyDesc = NSTextField(labelWithString: "Press anywhere to launch Web")
-        hotKeyDesc.font = NSFont.systemFont(ofSize: 11, weight: .regular)
-        hotKeyDesc.textColor = .secondaryLabelColor
-        hotKeyDesc.frame = NSRect(x: 16, y: 108, width: 180, height: 16)
-        card2.addSubview(hotKeyDesc)
-        
-        hotKeyButton.bezelStyle = .rounded
+        portResetButton.translatesAutoresizingMaskIntoConstraints = false
+
+        let portControls = NSStackView(views: [portField, portResetButton])
+        portControls.orientation = .horizontal
+        portControls.alignment = .centerY
+        portControls.spacing = 8
+        portControls.translatesAutoresizingMaskIntoConstraints = false
+        portRow.addSubview(portControls)
+
+        let separator1 = makeSeparator()
+        card.addSubview(separator1)
+
+        let shortcutRow = NSView()
+        shortcutRow.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(shortcutRow)
+
+        let shortcutText = makeTextStack(title: "Global Shortcut", description: "Open the Web console from anywhere")
+        shortcutRow.addSubview(shortcutText)
+
         hotKeyButton.title = SettingsManager.shared.globalHotKeyDisplayString
+        hotKeyButton.bezelStyle = .rounded
         hotKeyButton.target = self
         hotKeyButton.action = #selector(didClickRecordHotKey)
-        hotKeyButton.frame = NSRect(x: 236, y: 112, width: 116, height: 32)
-        card2.addSubview(hotKeyButton)
-        
+        hotKeyButton.translatesAutoresizingMaskIntoConstraints = false
+
         hotKeyResetButton.title = "Reset"
-        hotKeyResetButton.bezelStyle = .inline
+        hotKeyResetButton.bezelStyle = .rounded
+        hotKeyResetButton.controlSize = .small
         hotKeyResetButton.target = self
         hotKeyResetButton.action = #selector(didClickResetHotKey)
-        hotKeyResetButton.frame = NSRect(x: 356, y: 116, width: 60, height: 24)
-        card2.addSubview(hotKeyResetButton)
-        
-        let sep2 = createCardSeparator(y: 98, width: 400)
-        card2.addSubview(sep2)
-        
-        // --- Row 3: Checkboxes ---
-        launchAtLoginCheckbox.frame = NSRect(x: 16, y: 62, width: 390, height: 20)
+        hotKeyResetButton.translatesAutoresizingMaskIntoConstraints = false
+
+        let shortcutControls = NSStackView(views: [hotKeyButton, hotKeyResetButton])
+        shortcutControls.orientation = .horizontal
+        shortcutControls.alignment = .centerY
+        shortcutControls.spacing = 8
+        shortcutControls.translatesAutoresizingMaskIntoConstraints = false
+        shortcutRow.addSubview(shortcutControls)
+
+        let separator2 = makeSeparator()
+        card.addSubview(separator2)
+
+        let loginRow = NSView()
+        loginRow.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(loginRow)
+
+        let loginText = makeTextStack(
+            title: "Launch at Login",
+            description: "Start quietly in the menu bar; keep the Web console closed"
+        )
+        loginRow.addSubview(loginText)
+
         launchAtLoginCheckbox.state = SettingsManager.shared.isLaunchAtLoginEnabled ? .on : .off
         launchAtLoginCheckbox.target = self
         launchAtLoginCheckbox.action = #selector(didToggleLaunchAtLogin)
-        card2.addSubview(launchAtLoginCheckbox)
-        
-        autoOpenCheckbox.frame = NSRect(x: 16, y: 28, width: 390, height: 20)
-        autoOpenCheckbox.state = SettingsManager.shared.autoOpenWebOnLaunch ? .on : .off
-        autoOpenCheckbox.target = self
-        autoOpenCheckbox.action = #selector(didToggleAutoOpen)
-        card2.addSubview(autoOpenCheckbox)
-        
-        // ==========================================
-        // 5. BOTTOM FOOTER BAR
-        // ==========================================
+        launchAtLoginCheckbox.translatesAutoresizingMaskIntoConstraints = false
+        loginRow.addSubview(launchAtLoginCheckbox)
+
+        NSLayoutConstraint.activate([
+            title.topAnchor.constraint(equalTo: card.topAnchor, constant: 15),
+            title.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 18),
+            title.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -18),
+
+            portRow.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 7),
+            portRow.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
+            portRow.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
+            portRow.heightAnchor.constraint(equalToConstant: 54),
+
+            portText.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
+            portText.centerYAnchor.constraint(equalTo: portRow.centerYAnchor),
+            portText.trailingAnchor.constraint(lessThanOrEqualTo: portControls.leadingAnchor, constant: -12),
+            portControls.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
+            portControls.centerYAnchor.constraint(equalTo: portRow.centerYAnchor),
+            portField.widthAnchor.constraint(equalToConstant: 76),
+            portField.heightAnchor.constraint(equalToConstant: 26),
+            portResetButton.widthAnchor.constraint(equalToConstant: 68),
+            portResetButton.heightAnchor.constraint(equalToConstant: 26),
+
+            separator1.topAnchor.constraint(equalTo: portRow.bottomAnchor),
+            separator1.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
+            separator1.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
+            separator1.heightAnchor.constraint(equalToConstant: 1),
+
+            shortcutRow.topAnchor.constraint(equalTo: separator1.bottomAnchor),
+            shortcutRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
+            shortcutRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
+            shortcutRow.heightAnchor.constraint(equalToConstant: 60),
+
+            shortcutText.leadingAnchor.constraint(equalTo: shortcutRow.leadingAnchor),
+            shortcutText.centerYAnchor.constraint(equalTo: shortcutRow.centerYAnchor),
+            shortcutText.trailingAnchor.constraint(lessThanOrEqualTo: shortcutControls.leadingAnchor, constant: -12),
+            shortcutControls.trailingAnchor.constraint(equalTo: shortcutRow.trailingAnchor),
+            shortcutControls.centerYAnchor.constraint(equalTo: shortcutRow.centerYAnchor),
+            hotKeyButton.widthAnchor.constraint(equalToConstant: 118),
+            hotKeyButton.heightAnchor.constraint(equalToConstant: 30),
+            hotKeyResetButton.widthAnchor.constraint(equalToConstant: 60),
+            hotKeyResetButton.heightAnchor.constraint(equalToConstant: 26),
+
+            separator2.topAnchor.constraint(equalTo: shortcutRow.bottomAnchor),
+            separator2.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
+            separator2.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
+            separator2.heightAnchor.constraint(equalToConstant: 1),
+
+            loginRow.topAnchor.constraint(equalTo: separator2.bottomAnchor),
+            loginRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
+            loginRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
+            loginRow.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
+
+            loginText.leadingAnchor.constraint(equalTo: loginRow.leadingAnchor),
+            loginText.centerYAnchor.constraint(equalTo: loginRow.centerYAnchor),
+            loginText.trailingAnchor.constraint(lessThanOrEqualTo: launchAtLoginCheckbox.leadingAnchor, constant: -12),
+            launchAtLoginCheckbox.trailingAnchor.constraint(equalTo: loginRow.trailingAnchor),
+            launchAtLoginCheckbox.centerYAnchor.constraint(equalTo: loginRow.centerYAnchor)
+        ])
+
+        return card
+    }
+
+    private func makeFooterView() -> NSView {
+        let footer = NSView()
+
         logsButton.title = "View Live Logs"
         logsButton.bezelStyle = .accessoryBarAction
         logsButton.target = self
         logsButton.action = #selector(didClickLogs)
-        logsButton.frame = NSRect(x: 24, y: 22, width: 116, height: 30)
-        visualEffect.addSubview(logsButton)
-        
-        let tipLabel = NSTextField(labelWithString: "Preferences: ⌘,  •  Close: Esc")
-        tipLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
-        tipLabel.textColor = .tertiaryLabelColor
+        logsButton.translatesAutoresizingMaskIntoConstraints = false
+        footer.addSubview(logsButton)
+
+        let tipLabel = makeLabel("Preferences: ⌘,  •  Close: Esc", size: 11, color: .tertiaryLabelColor)
         tipLabel.alignment = .right
-        tipLabel.frame = NSRect(x: 160, y: 28, width: 210, height: 18)
-        visualEffect.addSubview(tipLabel)
-        
+        footer.addSubview(tipLabel)
+
         let closeButton = NSButton(title: "Done", target: self, action: #selector(didClickClose))
         closeButton.bezelStyle = .accessoryBarAction
-        closeButton.keyEquivalent = "\u{1b}" // ESC
-        closeButton.frame = NSRect(x: 382, y: 22, width: 74, height: 30)
-        visualEffect.addSubview(closeButton)
-        
-        updateUrlDisplay(port: SettingsManager.shared.port)
+        closeButton.keyEquivalent = "\u{1b}"
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        footer.addSubview(closeButton)
+
+        NSLayoutConstraint.activate([
+            logsButton.leadingAnchor.constraint(equalTo: footer.leadingAnchor),
+            logsButton.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
+            logsButton.widthAnchor.constraint(equalToConstant: 120),
+            logsButton.heightAnchor.constraint(equalToConstant: 30),
+
+            closeButton.trailingAnchor.constraint(equalTo: footer.trailingAnchor),
+            closeButton.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
+            closeButton.widthAnchor.constraint(equalToConstant: 74),
+            closeButton.heightAnchor.constraint(equalToConstant: 30),
+
+            tipLabel.leadingAnchor.constraint(greaterThanOrEqualTo: logsButton.trailingAnchor, constant: 12),
+            tipLabel.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -12),
+            tipLabel.centerYAnchor.constraint(equalTo: footer.centerYAnchor)
+        ])
+
+        return footer
     }
-    
-    private func createCardBox(frame: NSRect) -> NSBox {
-        let box = NSBox(frame: frame)
-        box.boxType = .custom
-        box.cornerRadius = 12
-        box.fillColor = NSColor.textColor.withAlphaComponent(0.04)
-        box.borderColor = NSColor.separatorColor.withAlphaComponent(0.2)
-        box.borderWidth = 1
-        return box
+
+    private func makeCardView() -> NSView {
+        let view = NSView()
+        view.wantsLayer = true
+        view.layer?.cornerRadius = 12
+        view.layer?.backgroundColor = NSColor.textColor.withAlphaComponent(0.04).cgColor
+        view.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.2).cgColor
+        view.layer?.borderWidth = 1
+        return view
     }
-    
-    private func createCardSeparator(y: CGFloat, width: CGFloat) -> NSBox {
-        let sep = NSBox(frame: NSRect(x: 16, y: y, width: width, height: 1))
-        sep.boxType = .separator
-        return sep
+
+    private func makeInsetView() -> NSView {
+        let view = NSView()
+        view.wantsLayer = true
+        view.layer?.cornerRadius = 8
+        view.layer?.backgroundColor = NSColor.textColor.withAlphaComponent(0.06).cgColor
+        view.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.2).cgColor
+        view.layer?.borderWidth = 1
+        return view
     }
-    
+
+    private func makeSeparator() -> NSBox {
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        return separator
+    }
+
+    private func makeSectionTitle(_ text: String) -> NSTextField {
+        makeLabel(text, size: 11, weight: .bold, color: .tertiaryLabelColor)
+    }
+
+    private func makeTextStack(title: String, description: String) -> NSStackView {
+        let titleLabel = makeLabel(title, size: 13, weight: .medium)
+        let descriptionLabel = makeLabel(description, size: 11, color: .secondaryLabelColor)
+        descriptionLabel.lineBreakMode = .byTruncatingTail
+        let stack = NSStackView(views: [titleLabel, descriptionLabel])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 1
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return stack
+    }
+
+    private func makeLabel(
+        _ text: String,
+        size: CGFloat,
+        weight: NSFont.Weight = .regular,
+        color: NSColor = .labelColor
+    ) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = NSFont.systemFont(ofSize: size, weight: weight)
+        label.textColor = color
+        label.translatesAutoresizingMaskIntoConstraints = false
+        return label
+    }
+
+    private func configureActionButton(_ button: NSButton, title: String, action: Selector) {
+        button.title = title
+        button.bezelStyle = .rounded
+        button.target = self
+        button.action = action
+        button.translatesAutoresizingMaskIntoConstraints = false
+    }
+
     private func updateUrlDisplay(port: Int) {
         urlLabel.stringValue = "http://127.0.0.1:\(port)"
         portField.stringValue = "\(port)"
@@ -513,11 +704,6 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     @objc private func didToggleLaunchAtLogin() {
         let enabled = (launchAtLoginCheckbox.state == .on)
         SettingsManager.shared.isLaunchAtLoginEnabled = enabled
-    }
-    
-    @objc private func didToggleAutoOpen() {
-        let enabled = (autoOpenCheckbox.state == .on)
-        SettingsManager.shared.autoOpenWebOnLaunch = enabled
     }
     
     @objc private func didClickClose() {

@@ -36,22 +36,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.updateUI(running: running)
         }
         
+        // Launch quietly in the menu bar. Opening the Web console is always an
+        // explicit user action, so rebuilding or restarting DSH Bar never steals
+        // focus by bringing a browser window to the front.
         ServiceManager.shared.startMonitoring()
-        
-        // Auto open web on launch if enabled
-        if SettingsManager.shared.autoOpenWebOnLaunch {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                if ServiceManager.shared.isRunning {
-                    ServiceManager.shared.openBrowser()
-                } else {
-                    ServiceManager.shared.startService { success, _ in
-                        if success {
-                            ServiceManager.shared.openBrowser()
-                        }
-                    }
-                }
-            }
-        }
     }
     
     private func setupStatusItem() {

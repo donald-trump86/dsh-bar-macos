@@ -6,7 +6,6 @@ import AppKit
 final class SettingsManager {
     static let shared = SettingsManager()
     
-    private let keyAutoOpen = "DSH_AutoOpenWebOnLaunch"
     private let keyHotKeyKeyCode = "DSH_GlobalHotKeyKeyCode"
     private let keyHotKeyModifiers = "DSH_GlobalHotKeyModifiers"
     private let keyHotKeyTitle = "DSH_GlobalHotKeyTitle"
@@ -39,9 +38,6 @@ final class SettingsManager {
     
     private init() {
         // Defaults
-        if UserDefaults.standard.object(forKey: keyAutoOpen) == nil {
-            UserDefaults.standard.set(true, forKey: keyAutoOpen)
-        }
         if UserDefaults.standard.object(forKey: keyPort) == nil {
             UserDefaults.standard.set(3080, forKey: keyPort)
         }
@@ -81,16 +77,6 @@ final class SettingsManager {
                 }
             }
             UserDefaults.standard.set(newValue, forKey: "DSH_LaunchAtLogin")
-        }
-    }
-    
-    // MARK: - Auto Open Web on Launch
-    var autoOpenWebOnLaunch: Bool {
-        get {
-            return UserDefaults.standard.bool(forKey: keyAutoOpen)
-        }
-        set {
-            UserDefaults.standard.set(newValue, forKey: keyAutoOpen)
         }
     }
     
