@@ -244,14 +244,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateStatusItems(snapshot: snapshot)
 
         let busy = snapshot.phase.isBusy || snapshot.phase == .checking
-        toggleServiceMenuItem.isEnabled = !busy
-        restartMenuItem.isEnabled = snapshot.isRunning && !busy
+        // DSH Bar only drives a service it started itself; an external Harness
+        // is surfaced but its Stop/Restart entries stay disabled.
+        let runningButForeign = snapshot.isRunning && !snapshot.isManaged
+        toggleServiceMenuItem.isEnabled = !busy && !runningButForeign
+        restartMenuItem.isEnabled = snapshot.isRunning && !busy && snapshot.isManaged
         openWebMenuItem.isEnabled = snapshot.isRunning
         copyUrlMenuItem.isEnabled = snapshot.isRunning
 
         switch snapshot.phase {
-        case .running:
+        case .running where snapshot.isManaged:
             toggleServiceMenuItem.title = "Stop Service"
+        case .running:
+            toggleServiceMenuItem.title = "Not Managed by DSH Bar"
         case .portConflict, .error:
             toggleServiceMenuItem.title = "Retry Start"
         default:

@@ -610,15 +610,20 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         serviceDetailsLabel.stringValue = details.joined(separator: "  •  ")
 
         let busy = snapshot.phase.isBusy || snapshot.phase == .checking
+        // A service this app did not start is shown but never driven: the panel
+        // stays honest about what DSH Bar is allowed to touch.
+        let runningButForeign = snapshot.isRunning && !snapshot.isManaged
         openButton.isEnabled = snapshot.isRunning
-        restartButton.isEnabled = snapshot.isRunning && !busy
-        toggleButton.isEnabled = !busy
+        restartButton.isEnabled = snapshot.isRunning && !busy && snapshot.isManaged
+        toggleButton.isEnabled = !busy && !runningButForeign
         // Editing the port mid-operation would desync the in-flight target port.
         portField.isEnabled = !busy
         portResetButton.isEnabled = !busy
         switch snapshot.phase {
-        case .running:
+        case .running where snapshot.isManaged:
             toggleButton.title = "Stop Service"
+        case .running:
+            toggleButton.title = "Not Managed"
         case .portConflict, .error:
             toggleButton.title = "Retry Start"
         default:
