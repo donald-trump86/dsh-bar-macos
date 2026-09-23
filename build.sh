@@ -37,6 +37,7 @@ SOURCE_FILES=(
     Sources/DshInstallAssistant.swift
     Sources/ExternalServicePrompt.swift
     Sources/ServiceNotifier.swift
+    Sources/Localization.swift
 )
 COMMON_SWIFT_FLAGS=(
     -O

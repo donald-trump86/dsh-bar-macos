@@ -8,7 +8,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     // Status Badge UI
     private let statusBadge = NSBox()
     private let statusDot = NSBox()
-    private let statusText = NSTextField(labelWithString: "STOPPED")
+    private let statusText = NSTextField(labelWithString: L(.statusStoppedWord))
     
     // URL Bar UI
     private let urlLabel = NSTextField(labelWithString: "http://127.0.0.1:3080")
@@ -19,7 +19,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     private let toggleButton = NSButton()
     private let restartButton = NSButton()
     private let logsButton = NSButton()
-    private let serviceDetailsLabel = NSTextField(labelWithString: "Checking service details…")
+    private let serviceDetailsLabel = NSTextField(labelWithString: L(.checkingServiceDetails))
     
     // Preferences UI
     private let portField = NSTextField()
@@ -27,11 +27,15 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     private let launchAtLoginCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let hotKeyButton = NSButton()
     private let hotKeyResetButton = NSButton()
-    private let dshInfoLabel = NSTextField(labelWithString: "Detecting DSH CLI…")
+    private let dshInfoLabel = NSTextField(labelWithString: L(.detectingDsh))
     private let dshActionButton = NSButton()
     private let autoRestartCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
-    private let notificationInfoLabel = NSTextField(labelWithString: "Checking notification permission…")
+    private let notificationInfoLabel = NSTextField(labelWithString: L(.notifNotChecked))
     private let notificationActionButton = NSButton()
+    private let languagePopup = NSPopUpButton()
+    private var languageObserverToken: UUID?
+    /// Guards against rebuilding the panel twice for one effective language.
+    private var lastEffectiveLanguage: AppLanguage = Localization.shared.effective
     
     private var localEventMonitor: Any?
     private var isRecordingHotKey = false
@@ -42,13 +46,13 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 540, height: 738),
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 792),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.center()
-        window.title = "Preferences"
+        window.title = L(.windowTitlePreferences)
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
@@ -87,6 +91,9 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         notifierObserverToken = ServiceNotifier.shared.addObserver { [weak self] in
             self?.updateNotificationRow()
         }
+        languageObserverToken = Localization.shared.addObserver { [weak self] in
+            self?.rebuildForLanguage()
+        }
     }
     
     required init?(coder: NSCoder) {
@@ -97,6 +104,9 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         NotificationCenter.default.removeObserver(self)
         if let token = notifierObserverToken {
             ServiceNotifier.shared.removeObserver(token)
+        }
+        if let token = languageObserverToken {
+            Localization.shared.removeObserver(token)
         }
     }
 
@@ -154,7 +164,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             preferencesCard.topAnchor.constraint(equalTo: serviceCard.bottomAnchor, constant: 14),
             preferencesCard.leadingAnchor.constraint(equalTo: header.leadingAnchor),
             preferencesCard.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-            preferencesCard.heightAnchor.constraint(equalToConstant: 378),
+            preferencesCard.heightAnchor.constraint(equalToConstant: 432),
 
             footer.leadingAnchor.constraint(equalTo: header.leadingAnchor),
             footer.trailingAnchor.constraint(equalTo: header.trailingAnchor),
@@ -179,12 +189,12 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         iconView.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(iconView)
 
-        let titleLabel = makeLabel("DeepSeek Harness", size: 20, weight: .bold)
+        let titleLabel = makeLabel(L(.appName), size: 20, weight: .bold)
         // Inside the app bundle this always resolves; the fallback only shows up
         // in tooling that runs the sources without an Info.plist.
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
             ?? "dev"
-        let subtitleLabel = makeLabel("Menu Bar Companion  •  v\(version)", size: 12, weight: .medium, color: .secondaryLabelColor)
+        let subtitleLabel = makeLabel(L(.appSubtitle, ["version": "v\(version)"]), size: 12, weight: .medium, color: .secondaryLabelColor)
         subtitleLabel.lineBreakMode = .byTruncatingTail
 
         let titleStack = NSStackView(views: [titleLabel, subtitleLabel])
@@ -242,7 +252,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
 
     private func makeServiceCard() -> NSView {
         let card = makeCardView()
-        let title = makeSectionTitle("LOCAL WEB CONSOLE")
+        let title = makeSectionTitle(L(.sectionLocalConsole))
         card.addSubview(title)
 
         let urlContainer = makeInsetView()
@@ -255,7 +265,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         urlLabel.lineBreakMode = .byTruncatingMiddle
         urlContainer.addSubview(urlLabel)
 
-        copyButton.title = "Copy"
+        copyButton.title = L(.copy)
         copyButton.bezelStyle = .rounded
         copyButton.controlSize = .small
         copyButton.target = self
@@ -269,10 +279,10 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         serviceDetailsLabel.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(serviceDetailsLabel)
 
-        configureActionButton(openButton, title: "Open Web", action: #selector(didClickOpen))
+        configureActionButton(openButton, title: L(.openWeb), action: #selector(didClickOpen))
         openButton.keyEquivalent = "\r"
-        configureActionButton(toggleButton, title: "Start Service", action: #selector(didClickToggle))
-        configureActionButton(restartButton, title: "Restart", action: #selector(didClickRestart))
+        configureActionButton(toggleButton, title: L(.startService), action: #selector(didClickToggle))
+        configureActionButton(restartButton, title: L(.restart), action: #selector(didClickRestart))
 
         let actions = NSStackView(views: [openButton, toggleButton, restartButton])
         actions.orientation = .horizontal
@@ -317,14 +327,14 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
 
     private func makePreferencesCard() -> NSView {
         let card = makeCardView()
-        let title = makeSectionTitle("PREFERENCES & CONFIGURATION")
+        let title = makeSectionTitle(L(.sectionPreferences))
         card.addSubview(title)
 
         let portRow = NSView()
         portRow.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(portRow)
 
-        let portText = makeTextStack(title: "Server Port", description: "Default: 3080")
+        let portText = makeTextStack(title: L(.serverPort), description: L(.defaultPortLabel, ["port": "3080"]))
         portRow.addSubview(portText)
 
         portField.stringValue = "\(SettingsManager.shared.port)"
@@ -333,7 +343,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         portField.delegate = self
         portField.translatesAutoresizingMaskIntoConstraints = false
 
-        portResetButton.title = "Default"
+        portResetButton.title = L(.defaultButton)
         portResetButton.bezelStyle = .rounded
         portResetButton.controlSize = .small
         portResetButton.target = self
@@ -354,7 +364,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         shortcutRow.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(shortcutRow)
 
-        let shortcutText = makeTextStack(title: "Global Shortcut", description: "Open the Web console from anywhere")
+        let shortcutText = makeTextStack(title: L(.globalShortcut), description: L(.globalShortcutDesc))
         shortcutRow.addSubview(shortcutText)
 
         hotKeyButton.title = SettingsManager.shared.globalHotKeyDisplayString
@@ -363,7 +373,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         hotKeyButton.action = #selector(didClickRecordHotKey)
         hotKeyButton.translatesAutoresizingMaskIntoConstraints = false
 
-        hotKeyResetButton.title = "Reset"
+        hotKeyResetButton.title = L(.reset)
         hotKeyResetButton.bezelStyle = .rounded
         hotKeyResetButton.controlSize = .small
         hotKeyResetButton.target = self
@@ -385,8 +395,8 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         card.addSubview(loginRow)
 
         let loginText = makeTextStack(
-            title: "Launch at Login",
-            description: "Start quietly in the menu bar; keep the Web console closed"
+            title: L(.launchAtLogin),
+            description: L(.launchAtLoginDesc)
         )
         loginRow.addSubview(loginText)
 
@@ -404,8 +414,8 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         card.addSubview(recoveryRow)
 
         let recoveryText = makeTextStack(
-            title: "Automatic Recovery",
-            description: "Restart a service DSH Bar started if it exits unexpectedly"
+            title: L(.automaticRecovery),
+            description: L(.automaticRecoveryDesc)
         )
         recoveryRow.addSubview(recoveryText)
 
@@ -427,13 +437,13 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         notificationInfoLabel.lineBreakMode = .byTruncatingTail
         notificationInfoLabel.translatesAutoresizingMaskIntoConstraints = false
         let notificationText = makeTextStack(
-            title: "Notifications",
-            description: "Used to tell you when the service dies"
+            title: L(.notifications),
+            description: L(.notificationsDesc)
         )
         notificationText.addArrangedSubview(notificationInfoLabel)
         notificationRow.addSubview(notificationText)
 
-        notificationActionButton.title = "Open Settings…"
+        notificationActionButton.title = L(.notifActionSettings)
         notificationActionButton.bezelStyle = .rounded
         notificationActionButton.controlSize = .small
         notificationActionButton.target = self
@@ -444,11 +454,38 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         let separator5 = makeSeparator()
         card.addSubview(separator5)
 
+        let languageRow = NSView()
+        languageRow.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(languageRow)
+
+        let languageText = makeTextStack(
+            title: L(.language),
+            description: L(.languageDesc)
+        )
+        languageRow.addSubview(languageText)
+
+        languagePopup.removeAllItems()
+        for (index, language) in AppLanguage.allCases.enumerated() {
+            languagePopup.addItem(withTitle: language.displayName)
+            languagePopup.item(at: index)?.representedObject = language.rawValue
+        }
+        if let current = AppLanguage.allCases.firstIndex(of: SettingsManager.shared.language) {
+            languagePopup.selectItem(at: current)
+        }
+        languagePopup.target = self
+        languagePopup.action = #selector(didChangeLanguage)
+        languagePopup.controlSize = .small
+        languagePopup.translatesAutoresizingMaskIntoConstraints = false
+        languageRow.addSubview(languagePopup)
+
+        let separator6 = makeSeparator()
+        card.addSubview(separator6)
+
         let dshRow = NSView()
         dshRow.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(dshRow)
 
-        let dshTitleLabel = makeLabel("DSH Command Line", size: 13, weight: .medium)
+        let dshTitleLabel = makeLabel(L(.dshCommandLine), size: 13, weight: .medium)
         dshInfoLabel.font = NSFont.systemFont(ofSize: 11)
         dshInfoLabel.textColor = .secondaryLabelColor
         dshInfoLabel.lineBreakMode = .byTruncatingMiddle
@@ -461,7 +498,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         dshText.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         dshRow.addSubview(dshText)
 
-        dshActionButton.title = "Recheck"
+        dshActionButton.title = L(.recheck)
         dshActionButton.bezelStyle = .rounded
         dshActionButton.controlSize = .small
         dshActionButton.target = self
@@ -562,7 +599,24 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             separator5.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
             separator5.heightAnchor.constraint(equalToConstant: 1),
 
-            dshRow.topAnchor.constraint(equalTo: separator5.bottomAnchor),
+            languageRow.topAnchor.constraint(equalTo: separator5.bottomAnchor),
+            languageRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
+            languageRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
+            languageRow.heightAnchor.constraint(equalToConstant: 54),
+
+            languageText.leadingAnchor.constraint(equalTo: languageRow.leadingAnchor),
+            languageText.centerYAnchor.constraint(equalTo: languageRow.centerYAnchor),
+            languageText.trailingAnchor.constraint(lessThanOrEqualTo: languagePopup.leadingAnchor, constant: -12),
+            languagePopup.trailingAnchor.constraint(equalTo: languageRow.trailingAnchor),
+            languagePopup.centerYAnchor.constraint(equalTo: languageRow.centerYAnchor),
+            languagePopup.widthAnchor.constraint(equalToConstant: 148),
+
+            separator6.topAnchor.constraint(equalTo: languageRow.bottomAnchor),
+            separator6.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
+            separator6.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
+            separator6.heightAnchor.constraint(equalToConstant: 1),
+
+            dshRow.topAnchor.constraint(equalTo: separator6.bottomAnchor),
             dshRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
             dshRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
             dshRow.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
@@ -582,18 +636,18 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     private func makeFooterView() -> NSView {
         let footer = NSView()
 
-        logsButton.title = "View Live Logs"
+        logsButton.title = L(.viewLiveLogs)
         logsButton.bezelStyle = .accessoryBarAction
         logsButton.target = self
         logsButton.action = #selector(didClickLogs)
         logsButton.translatesAutoresizingMaskIntoConstraints = false
         footer.addSubview(logsButton)
 
-        let tipLabel = makeLabel("Preferences: ⌘,  •  Close: Esc", size: 11, color: .tertiaryLabelColor)
+        let tipLabel = makeLabel(L(.footerHints), size: 11, color: .tertiaryLabelColor)
         tipLabel.alignment = .right
         footer.addSubview(tipLabel)
 
-        let closeButton = NSButton(title: "Done", target: self, action: #selector(didClickClose))
+        let closeButton = NSButton(title: L(.done), target: self, action: #selector(didClickClose))
         closeButton.bezelStyle = .accessoryBarAction
         closeButton.keyEquivalent = "\u{1b}"
         closeButton.translatesAutoresizingMaskIntoConstraints = false
@@ -696,28 +750,28 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         switch snapshot.phase {
         case .running:
             color = .systemGreen
-            statusText.stringValue = "RUNNING : \(snapshot.port)"
+            statusText.stringValue = L(.runningPort, ["port": "\(snapshot.port)"])
         case .checking:
             color = .systemOrange
-            statusText.stringValue = "CHECKING"
+            statusText.stringValue = L(.statusChecking)
         case .starting:
             color = .systemOrange
-            statusText.stringValue = "STARTING"
+            statusText.stringValue = L(.statusStarting)
         case .stopping:
             color = .systemOrange
-            statusText.stringValue = "STOPPING"
+            statusText.stringValue = L(.statusStopping)
         case .restarting:
             color = .systemOrange
-            statusText.stringValue = "RESTARTING"
+            statusText.stringValue = L(.statusRestarting)
         case .portConflict:
             color = .systemRed
-            statusText.stringValue = "PORT IN USE"
+            statusText.stringValue = L(.statusPortInUse)
         case .error:
             color = .systemRed
-            statusText.stringValue = "ERROR"
+            statusText.stringValue = L(.statusError)
         case .stopped:
             color = .secondaryLabelColor
-            statusText.stringValue = "STOPPED"
+            statusText.stringValue = L(.statusStoppedWord)
         }
 
         statusBadge.fillColor = color.withAlphaComponent(0.15)
@@ -726,15 +780,15 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         statusText.textColor = color
 
         var details: [String] = []
-        if let pid = snapshot.pid { details.append("PID \(pid)") }
-        if let uptime = snapshot.uptime { details.append("Up \(Self.formatDuration(uptime))") }
-        if let version = snapshot.dshVersion { details.append("DSH \(version)") }
+        if let pid = snapshot.pid { details.append(L(.pidLabel, ["pid": "\(pid)"])) }
+        if let uptime = snapshot.uptime { details.append(L(.upLabel, ["duration": Self.formatDuration(uptime)])) }
+        if let version = snapshot.dshVersion { details.append(L(.dshVersionLabel, ["version": version])) }
         if let message = snapshot.message { details.append(message) }
         // An automatic restart restores the service but must not bury the fact
         // that it died: notifications may never have been delivered at all.
         if let notice = ServiceManager.shared.recoveryNotice { details.append(notice) }
         if details.isEmpty {
-            details.append(snapshot.phase == .stopped ? "Service is not running" : "Checking service status…")
+            details.append(snapshot.phase == .stopped ? L(.serviceNotRunning) : L(.checkingServiceStatus))
         }
         serviceDetailsLabel.stringValue = details.joined(separator: "  •  ")
         if ServiceManager.shared.recoveryNotice != nil {
@@ -755,31 +809,31 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         portResetButton.isEnabled = !busy
         switch snapshot.phase {
         case .running where externallyStarted:
-            toggleButton.title = "Stop External…"
-            restartButton.title = "Adopt & Restart"
+            toggleButton.title = L(.stopExternal)
+            restartButton.title = L(.adoptRestart)
         case .running:
-            toggleButton.title = "Stop Service"
-            restartButton.title = "Restart"
+            toggleButton.title = L(.stopService)
+            restartButton.title = L(.restart)
         case .portConflict, .error:
-            toggleButton.title = "Retry Start"
-            restartButton.title = "Restart"
+            toggleButton.title = L(.retryStart)
+            restartButton.title = L(.restart)
         default:
-            toggleButton.title = "Start Service"
-            restartButton.title = "Restart"
+            toggleButton.title = L(.startService)
+            restartButton.title = L(.restart)
         }
 
         if !ServiceManager.shared.dshDetectionComplete {
-            dshInfoLabel.stringValue = "Searching PATH with which dsh…"
-            dshActionButton.title = "Checking…"
+            dshInfoLabel.stringValue = L(.searchingPath)
+            dshActionButton.title = L(.checkingEllipsis)
             dshActionButton.isEnabled = false
         } else if let path = snapshot.dshPath {
             let version = snapshot.dshVersion.map { " • \($0)" } ?? ""
-            dshInfoLabel.stringValue = "Installed: \(path)\(version)"
-            dshActionButton.title = "Recheck"
+            dshInfoLabel.stringValue = L(.installedAt, ["path": path, "version": version])
+            dshActionButton.title = L(.recheck)
             dshActionButton.isEnabled = true
         } else {
-            dshInfoLabel.stringValue = "Not found — install with npm to start the service"
-            dshActionButton.title = "Install…"
+            dshInfoLabel.stringValue = L(.notFoundInstallNpm)
+            dshActionButton.title = L(.installEllipsis)
             dshActionButton.isEnabled = true
         }
 
@@ -805,7 +859,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             ServiceManager.shared.stopService { [weak self] success, message in
                 self?.toggleButton.isEnabled = true
                 if !success, let message = message {
-                    self?.showAlert(title: "Could Not Stop the Service", message: message)
+                    self?.showAlert(title: L(.couldNotStopService), message: message)
                 }
             }
         } else {
@@ -815,7 +869,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
                 if !success, ServiceManager.shared.snapshot.dshPath == nil {
                     DshInstallAssistant.present()
                 } else if !success, let message = message {
-                    self?.showAlert(title: "Could Not Start the Service", message: message)
+                    self?.showAlert(title: L(.couldNotStartService), message: message)
                 }
             }
         }
@@ -826,7 +880,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         ServiceManager.shared.stopUnmanagedService(pid: pid) { [weak self] success, message in
             self?.toggleButton.isEnabled = true
             if !success, let message = message {
-                self?.showAlert(title: "Could Not Stop the External Service", message: message)
+                self?.showAlert(title: L(.couldNotStopExternal), message: message)
             }
         }
     }
@@ -844,7 +898,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         ServiceManager.shared.restartService { [weak self] success, message in
             self?.restartButton.isEnabled = true
             if !success, let message = message {
-                self?.showAlert(title: "Could Not Restart the Service", message: message)
+                self?.showAlert(title: L(.couldNotRestartService), message: message)
             }
         }
     }
@@ -854,7 +908,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         ServiceManager.shared.restartUnmanagedService(pid: pid) { [weak self] success, message in
             self?.restartButton.isEnabled = true
             if !success, let message = message {
-                self?.showAlert(title: "Could Not Restart the External Service", message: message)
+                self?.showAlert(title: L(.couldNotRestartExternal), message: message)
             }
         }
     }
@@ -864,7 +918,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: L(.ok))
         NSApplication.shared.activate(ignoringOtherApps: true)
         alert.runModal()
     }
@@ -878,7 +932,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             DshInstallAssistant.present()
         } else {
             dshActionButton.isEnabled = false
-            dshActionButton.title = "Checking…"
+            dshActionButton.title = L(.checkingEllipsis)
             ServiceManager.shared.detectDshInstallation { [weak self] _ in
                 self?.dshActionButton.isEnabled = true
             }
@@ -887,11 +941,11 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     
     @objc private func didClickCopy() {
         ServiceManager.shared.copyURLToClipboard()
-        copyButton.title = "Copied!"
+        copyButton.title = L(.copied)
         copyButton.isEnabled = false
         copyFeedbackTimer?.invalidate()
         copyFeedbackTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
-            self?.copyButton.title = "Copy"
+            self?.copyButton.title = L(.copy)
             self?.copyButton.isEnabled = true
         }
     }
@@ -912,11 +966,11 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
                 
                 if ServiceManager.shared.isRunning {
                     let alert = NSAlert()
-                    alert.messageText = "Port Updated to \(newPort)"
-                    alert.informativeText = "The server is currently running. Would you like to restart the service on the new port now?"
+                    alert.messageText = L(.portUpdatedTitle, ["port": "\(newPort)"])
+                    alert.informativeText = L(.portUpdatedBody)
                     alert.alertStyle = .informational
-                    alert.addButton(withTitle: "Restart Now")
-                    alert.addButton(withTitle: "Later")
+                    alert.addButton(withTitle: L(.restartNow))
+                    alert.addButton(withTitle: L(.later))
                     if alert.runModal() == .alertFirstButtonReturn {
                         didClickRestart()
                     }
@@ -944,7 +998,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         }
         
         isRecordingHotKey = true
-        hotKeyButton.title = "Recording..."
+        hotKeyButton.title = L(.recording)
         hotKeyButton.highlight(true)
         
         localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
@@ -1017,12 +1071,43 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         let days = total / 86_400
         let hours = (total % 86_400) / 3_600
         let minutes = (total % 3_600) / 60
-        if days > 0 { return "\(days)d \(hours)h" }
-        if hours > 0 { return "\(hours)h \(minutes)m" }
+        if days > 0 { return L(.durationDaysHours, ["days": "\(days)", "hours": "\(hours)"]) }
+        if hours > 0 { return L(.durationHoursMinutes, ["hours": "\(hours)", "minutes": "\(minutes)"]) }
         return "\(minutes)m"
     }
 
     // MARK: - Preferences Actions
+    @objc private func didChangeLanguage() {
+        guard let raw = languagePopup.selectedItem?.representedObject as? String,
+              let language = AppLanguage(rawValue: raw) else { return }
+        SettingsManager.shared.language = language
+    }
+
+    /// Rebuilds the panel in the new language.
+    ///
+    /// Every string here is resolved at construction time, so re-running the
+    /// builder is what makes the switch complete — re-setting a hand-picked list
+    /// of controls would quietly miss whichever one gets added next. The work is
+    /// deferred because this runs from inside the popup's own action.
+    private func rebuildForLanguage() {
+        let effective = Localization.shared.effective
+        guard effective != lastEffectiveLanguage else { return }
+        lastEffectiveLanguage = effective
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window else { return }
+            let wasVisible = window.isVisible
+            self.setupUI()
+            self.updateState(ServiceManager.shared.snapshot)
+            self.updateNotificationRow()
+            self.launchAtLoginCheckbox.state = SettingsManager.shared.isLaunchAtLoginEnabled ? .on : .off
+            self.autoRestartCheckbox.state = SettingsManager.shared.autoRestartEnabled ? .on : .off
+            self.portField.stringValue = "\(SettingsManager.shared.port)"
+            if wasVisible {
+                window.makeKeyAndOrderFront(nil)
+            }
+        }
+    }
+
     @objc private func didToggleLaunchAtLogin() {
         let enabled = (launchAtLoginCheckbox.state == .on)
         SettingsManager.shared.isLaunchAtLoginEnabled = enabled
@@ -1052,13 +1137,13 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         switch notifier.availability {
         case .available:
             notificationInfoLabel.textColor = .secondaryLabelColor
-            notificationActionButton.title = "Settings…"
+            notificationActionButton.title = L(.notifActionSettings)
         case .unknown:
             notificationInfoLabel.textColor = .secondaryLabelColor
-            notificationActionButton.title = "Enable…"
+            notificationActionButton.title = L(.notifActionEnable)
         case .denied, .unusable:
             notificationInfoLabel.textColor = .systemOrange
-            notificationActionButton.title = "Fix…"
+            notificationActionButton.title = L(.notifActionFix)
         }
     }
     

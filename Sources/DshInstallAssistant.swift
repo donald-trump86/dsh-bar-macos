@@ -6,20 +6,20 @@ enum DshInstallAssistant {
         let npmInstalled = ServiceManager.shared.findNpmBinary() != nil
         let alert = NSAlert()
         alert.alertStyle = .informational
-        alert.messageText = "DeepSeek Harness CLI Is Not Installed"
+        alert.messageText = L(.installTitle)
 
         if npmInstalled {
-            alert.informativeText = "DSH Bar could not find the ‘dsh’ command. The official npm installation command is:\n\n\(ServiceManager.installCommand)\n\nThe command can be copied and Terminal opened for you."
-            alert.addButton(withTitle: "Copy Command & Open Terminal")
-            alert.addButton(withTitle: "Cancel")
+            alert.informativeText = L(.installDshMissingBody, ["command": ServiceManager.installCommand])
+            alert.addButton(withTitle: L(.installCopyAndOpenTerminal))
+            alert.addButton(withTitle: L(.cancel))
             guard alert.runModal() == .alertFirstButtonReturn else { return }
             copyInstallCommand()
             openTerminal()
         } else {
-            alert.informativeText = "DSH Bar could not find either ‘dsh’ or ‘npm’. Install Node.js/npm first, then run:\n\n\(ServiceManager.installCommand)"
-            alert.addButton(withTitle: "Open Node.js Website")
-            alert.addButton(withTitle: "Copy Command")
-            alert.addButton(withTitle: "Cancel")
+            alert.informativeText = L(.installNpmMissingBody, ["command": ServiceManager.installCommand])
+            alert.addButton(withTitle: L(.installOpenNodeSite))
+            alert.addButton(withTitle: L(.installCopyCommand))
+            alert.addButton(withTitle: L(.cancel))
             switch alert.runModal() {
             case .alertFirstButtonReturn:
                 if let url = URL(string: "https://nodejs.org/en/download") {

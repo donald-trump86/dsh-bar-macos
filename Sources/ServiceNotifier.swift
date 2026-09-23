@@ -26,9 +26,9 @@ final class ServiceNotifier: NSObject, UNUserNotificationCenterDelegate {
 
         var shortDescription: String {
             switch self {
-            case .unknown: return "Not checked yet"
-            case .available: return "On"
-            case .denied: return "Turned off in System Settings"
+            case .unknown: return L(.notifNotChecked)
+            case .available: return L(.notifAvailable)
+            case .denied: return L(.notifDenied)
             case let .unusable(reason): return reason
             }
         }
@@ -91,7 +91,7 @@ final class ServiceNotifier: NSObject, UNUserNotificationCenterDelegate {
     /// prompt users who never start a service.
     func requestAuthorizationIfNeeded(completion: (() -> Void)? = nil) {
         guard let center else {
-            availability = .unusable("Needs the installed app (not a bare binary)")
+            availability = .unusable(L(.notifUnusable))
             completion?()
             return
         }
@@ -113,7 +113,7 @@ final class ServiceNotifier: NSObject, UNUserNotificationCenterDelegate {
 
     func refreshAvailability(completion: (() -> Void)? = nil) {
         guard let center else {
-            availability = .unusable("Needs the installed app (not a bare binary)")
+            availability = .unusable(L(.notifUnusable))
             completion?()
             return
         }
@@ -144,33 +144,33 @@ final class ServiceNotifier: NSObject, UNUserNotificationCenterDelegate {
     // MARK: - Delivery
 
     func notifyUnexpectedExit(pid: Int32?, port: Int) {
-        let who = pid.map { "PID \($0)" } ?? "The service"
+        let who = pid.map { L(.pidLabel, ["pid": "\($0)"]) } ?? L(.theService)
         post(
             identifier: "dsh-bar.unexpected-exit",
-            title: "DeepSeek Harness stopped unexpectedly",
-            body: "\(who) on port \(port) is no longer running."
+            title: L(.notifStoppedTitle),
+            body: L(.notifStoppedBody, ["who": who, "port": "\(port)"])
         )
     }
 
     func notifyAutoRestarted(attempt: Int) {
         post(
             identifier: "dsh-bar.auto-restarted",
-            title: "DeepSeek Harness was restarted",
-            body: "DSH Bar brought the service back automatically (attempt \(attempt))."
+            title: L(.notifRestartedTitle),
+            body: L(.notifRestartedBody, ["attempt": "\(attempt)"])
         )
     }
 
     func notifyGaveUp() {
         post(
             identifier: "dsh-bar.recovery-gave-up",
-            title: "DeepSeek Harness keeps stopping",
-            body: "Automatic restarts were paused to avoid a loop. Start it manually to try again."
+            title: L(.notifGaveUpTitle),
+            body: L(.notifGaveUpBody)
         )
     }
 
     private func post(identifier: String, title: String, body: String) {
         guard let center else {
-            availability = .unusable("Needs the installed app (not a bare binary)")
+            availability = .unusable(L(.notifUnusable))
             return
         }
         guard availability.isUsable else {

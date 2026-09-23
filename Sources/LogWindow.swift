@@ -6,7 +6,11 @@ final class LogWindowController: NSWindowController, NSWindowDelegate, NSSearchF
     private let textView = NSTextView()
     private let searchField = NSSearchField()
     private let pauseButton = NSButton()
-    private let statusLabel = NSTextField(labelWithString: "Waiting for logs…")
+    private let statusLabel = NSTextField(labelWithString: L(.logsWaiting))
+    private let titleLabel = NSTextField(labelWithString: L(.logsTitle))
+    private let clearButton = NSButton()
+    private let revealButton = NSButton()
+    private var languageObserverToken: UUID?
     private var refreshTimer: Timer?
     private var readOffset: UInt64 = 0
     private var rawText = ""
@@ -24,16 +28,38 @@ final class LogWindowController: NSWindowController, NSWindowDelegate, NSSearchF
             defer: false
         )
         window.center()
-        window.title = "DSH Live Logs"
+        window.title = L(.logsWindowTitle)
         window.minSize = NSSize(width: 600, height: 360)
 
         super.init(window: window)
         window.delegate = self
         setupUI()
+
+        // Re-apply text instead of rebuilding: this window owns the log read
+        // offset and the scrolled position, and neither should be disturbed by
+        // a language change.
+        languageObserverToken = Localization.shared.addObserver { [weak self] in
+            self?.applyLanguage()
+        }
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        if let token = languageObserverToken {
+            Localization.shared.removeObserver(token)
+        }
+    }
+
+    private func applyLanguage() {
+        window?.title = L(.logsWindowTitle)
+        titleLabel.stringValue = L(.logsTitle)
+        searchField.placeholderString = L(.logsFilter)
+        pauseButton.title = isPaused ? L(.logsResume) : L(.logsPause)
+        clearButton.title = L(.logsClearView)
+        revealButton.title = L(.logsRevealFile)
     }
 
     override func showWindow(_ sender: Any?) {
@@ -52,18 +78,17 @@ final class LogWindowController: NSWindowController, NSWindowDelegate, NSSearchF
         contentView.wantsLayer = true
         contentView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
 
-        let titleLabel = NSTextField(labelWithString: "Live Service Logs")
         titleLabel.font = NSFont.systemFont(ofSize: 16, weight: .semibold)
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(titleLabel)
 
-        searchField.placeholderString = "Filter logs"
+        searchField.placeholderString = L(.logsFilter)
         searchField.sendsSearchStringImmediately = true
         searchField.delegate = self
         searchField.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(searchField)
 
-        pauseButton.title = "Pause"
+        pauseButton.title = L(.logsPause)
         pauseButton.bezelStyle = .rounded
         pauseButton.target = self
         pauseButton.action = #selector(togglePause)
@@ -105,12 +130,16 @@ final class LogWindowController: NSWindowController, NSWindowDelegate, NSSearchF
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(statusLabel)
 
-        let clearButton = NSButton(title: "Clear View", target: self, action: #selector(clearView))
+        clearButton.title = L(.logsClearView)
+        clearButton.target = self
+        clearButton.action = #selector(clearView)
         clearButton.bezelStyle = .rounded
         clearButton.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(clearButton)
 
-        let revealButton = NSButton(title: "Reveal File", target: self, action: #selector(revealLogFile))
+        revealButton.title = L(.logsRevealFile)
+        revealButton.target = self
+        revealButton.action = #selector(revealLogFile)
         revealButton.bezelStyle = .rounded
         revealButton.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(revealButton)
@@ -172,7 +201,7 @@ final class LogWindowController: NSWindowController, NSWindowDelegate, NSSearchF
                   let number = attributes[.size] as? NSNumber else {
                 DispatchQueue.main.async {
                     self.readInFlight = false
-                    self.statusLabel.stringValue = "No log file yet — it will appear after the service starts."
+                    self.statusLabel.stringValue = L(.logsNoFileYet)
                 }
                 return
             }
@@ -191,7 +220,7 @@ final class LogWindowController: NSWindowController, NSWindowDelegate, NSSearchF
             guard let handle = try? FileHandle(forReadingFrom: url) else {
                 DispatchQueue.main.async {
                     self.readInFlight = false
-                    self.statusLabel.stringValue = "Could not read \(url.path)"
+                    self.statusLabel.stringValue = L(.logsReadError, ["path": url.path])
                 }
                 return
             }
@@ -243,9 +272,9 @@ final class LogWindowController: NSWindowController, NSWindowDelegate, NSSearchF
 
     @objc private func togglePause() {
         isPaused.toggle()
-        pauseButton.title = isPaused ? "Resume" : "Pause"
+        pauseButton.title = isPaused ? L(.logsResume) : L(.logsPause)
         if isPaused {
-            statusLabel.stringValue = "Paused"
+            statusLabel.stringValue = L(.logsPaused)
         } else {
             refreshNow()
         }
@@ -262,7 +291,7 @@ final class LogWindowController: NSWindowController, NSWindowDelegate, NSSearchF
             readOffset = 0
         }
         renderText(scrollToBottom: false)
-        statusLabel.stringValue = "View cleared — the log file was not deleted."
+        statusLabel.stringValue = L(.logsClearedNotice)
     }
 
     @objc private func revealLogFile() {

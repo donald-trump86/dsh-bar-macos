@@ -10,19 +10,17 @@ enum ExternalServicePrompt {
 
         var buttonTitle: String {
             switch self {
-            case .stop: return "Stop Process"
-            case .restart: return "Adopt & Restart"
+            case .stop: return L(.extStopButton)
+            case .restart: return L(.adoptRestart)
             }
         }
 
         var explanation: String {
             switch self {
             case .stop:
-                return "DSH Bar did not start it, so stopping it terminates that process. "
-                    + "Your terminal will report the server as stopped."
+                return L(.extStopExplain)
             case .restart:
-                return "DSH Bar will stop that process and start the service itself, "
-                    + "so Stop and Restart work normally from now on."
+                return L(.extRestartExplain)
             }
         }
     }
@@ -37,16 +35,18 @@ enum ExternalServicePrompt {
             NSApplication.shared.activate(ignoringOtherApps: true)
             let alert = NSAlert()
             alert.alertStyle = .warning
-            alert.messageText = "DeepSeek Harness Was Started Outside DSH Bar"
+            alert.messageText = L(.extTitle)
+            let processLine = L(.extProcessLabel, ["command": info.command])
+            let idLine = "\(L(.pidLabel, ["pid": "\(info.pid)"]))   •   \(L(.serverPort)): \(info.port)"
             alert.informativeText = """
-            Process: \(info.command)
-            PID: \(info.pid)   •   Port: \(info.port)
+            \(processLine)
+            \(idLine)
 
             \(action.explanation)
             """
 
             alert.addButton(withTitle: action.buttonTitle)
-            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: L(.cancel))
 
             let confirmed = alert.runModal() == .alertFirstButtonReturn
             // The PID can be reused or the service can exit while the dialog is

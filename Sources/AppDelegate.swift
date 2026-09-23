@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var dashboardMenuItem: NSMenuItem!
     private var quitAndStopMenuItem: NSMenuItem!
     private var notifierObserverToken: UUID?
+    private var languageObserverToken: UUID?
     /// Set by `Quit & Stop Service…` so `applicationShouldTerminate` knows the
     /// user asked for the service to go away too, and can wait for the stop.
     private var pendingQuitStopsService = false
@@ -45,6 +46,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.updateUI(snapshot: ServiceManager.shared.snapshot)
         }
         ServiceNotifier.shared.refreshAvailability()
+
+        // The menu is built from localized strings, so it is rebuilt on a
+        // language change rather than patched item by item.
+        languageObserverToken = Localization.shared.addObserver { [weak self] in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                self.setupMenu()
+                self.updateUI(snapshot: ServiceManager.shared.snapshot)
+            }
+        }
 
         // Start quietly. The Web console only opens from Open Web or its global
         // shortcut, never from app launch, Start Service, or Restart Service.
@@ -118,21 +129,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func statusTitle(for snapshot: ServiceSnapshot) -> String {
         switch snapshot.phase {
         case .checking:
-            return "Checking DeepSeek Harness…"
+            return L(.tipChecking)
         case .stopped:
-            return "DeepSeek Harness: Stopped (\(snapshot.port))"
+            return L(.tipStopped, ["port": "\(snapshot.port)"])
         case .starting:
-            return "DeepSeek Harness: Starting…"
+            return L(.tipStarting)
         case .running:
-            return "DeepSeek Harness: Running (\(snapshot.port))"
+            return L(.tipRunning, ["port": "\(snapshot.port)"])
         case .stopping:
-            return "DeepSeek Harness: Stopping…"
+            return L(.tipStopping)
         case .restarting:
-            return "DeepSeek Harness: Restarting…"
+            return L(.tipRestarting)
         case .portConflict:
-            return "Port \(snapshot.port) Is in Use"
+            return L(.tipPortInUse, ["port": "\(snapshot.port)"])
         case .error:
-            return "DeepSeek Harness: Error"
+            return L(.tipError)
         }
     }
 
@@ -155,19 +166,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusMenuItem.attributedTitle = title
 
         var details: [String] = []
-        if let pid = snapshot.pid { details.append("PID \(pid)") }
-        if let uptime = snapshot.uptime { details.append("Up \(Self.formatDuration(uptime))") }
-        if let version = snapshot.dshVersion { details.append("DSH \(version)") }
+        if let pid = snapshot.pid { details.append(L(.pidLabel, ["pid": "\(pid)"])) }
+        if let uptime = snapshot.uptime { details.append(L(.upLabel, ["duration": Self.formatDuration(uptime)])) }
+        if let version = snapshot.dshVersion { details.append(L(.dshVersionLabel, ["version": version])) }
         if details.isEmpty, let message = snapshot.message {
             details.append(message)
         }
         if details.isEmpty {
             if !ServiceManager.shared.dshDetectionComplete {
-                details.append("DSH CLI: detecting…")
+                details.append(L(.menuDshDetecting))
             } else if snapshot.dshPath == nil {
-                details.append("DSH CLI: not installed")
+                details.append(L(.menuDshNotInstalled))
             } else if let path = snapshot.dshPath {
-                details.append("DSH: \(path)")
+                details.append(L(.menuDshPath, ["path": path]))
             }
         }
         detailsMenuItem.title = details.joined(separator: "  •  ")
@@ -178,18 +189,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu = NSMenu()
         menu.autoenablesItems = false
 
-        statusMenuItem = NSMenuItem(title: "Checking status…", action: nil, keyEquivalent: "")
+        statusMenuItem = NSMenuItem(title: L(.checkingServiceStatus), action: nil, keyEquivalent: "")
         statusMenuItem.isEnabled = true
         menu.addItem(statusMenuItem)
 
-        detailsMenuItem = NSMenuItem(title: "DSH CLI: detecting…", action: nil, keyEquivalent: "")
+        detailsMenuItem = NSMenuItem(title: L(.menuDshDetecting), action: nil, keyEquivalent: "")
         detailsMenuItem.isEnabled = false
         menu.addItem(detailsMenuItem)
 
         menu.addItem(.separator())
 
         openWebMenuItem = NSMenuItem(
-            title: "Open Web Console",
+            title: L(.openWeb),
             action: #selector(didSelectOpenWeb),
             keyEquivalent: "o"
         )
@@ -198,7 +209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(openWebMenuItem)
 
         toggleServiceMenuItem = NSMenuItem(
-            title: "Start Service",
+            title: L(.startService),
             action: #selector(didSelectToggleService),
             keyEquivalent: "s"
         )
@@ -207,7 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(toggleServiceMenuItem)
 
         restartMenuItem = NSMenuItem(
-            title: "Restart Service",
+            title: L(.restartServiceMenu),
             action: #selector(didSelectRestart),
             keyEquivalent: "r"
         )
@@ -216,7 +227,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(restartMenuItem)
 
         copyUrlMenuItem = NSMenuItem(
-            title: "Copy Web URL",
+            title: L(.copyWebURL),
             action: #selector(didSelectCopyUrl),
             keyEquivalent: "c"
         )
@@ -227,7 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
 
         dashboardMenuItem = NSMenuItem(
-            title: "Preferences…",
+            title: L(.preferencesMenu),
             action: #selector(didSelectDashboard),
             keyEquivalent: ","
         )
@@ -236,7 +247,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(dashboardMenuItem)
 
         logsMenuItem = NSMenuItem(
-            title: "View Live Logs…",
+            title: L(.viewLiveLogsMenu),
             action: #selector(didSelectLogs),
             keyEquivalent: "l"
         )
@@ -247,7 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
 
         let quitMenuItem = NSMenuItem(
-            title: "Quit DSH Bar",
+            title: L(.quit),
             action: #selector(didSelectQuit),
             keyEquivalent: "q"
         )
@@ -258,7 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The two quits differ in what happens to the service, so the titles say
         // so rather than relying on the user remembering.
         quitAndStopMenuItem = NSMenuItem(
-            title: "Quit & Stop Service…",
+            title: L(.quitAndStop),
             action: #selector(didSelectQuitAndStopService),
             keyEquivalent: "q"
         )
@@ -308,17 +319,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         switch snapshot.phase {
         case .running where externallyStarted:
-            toggleServiceMenuItem.title = "Stop External Service…"
-            restartMenuItem.title = "Adopt & Restart Service…"
+            toggleServiceMenuItem.title = L(.stopExternalMenu)
+            restartMenuItem.title = L(.adoptRestartMenu)
         case .running:
-            toggleServiceMenuItem.title = "Stop Service"
-            restartMenuItem.title = "Restart Service"
+            toggleServiceMenuItem.title = L(.stopService)
+            restartMenuItem.title = L(.restartServiceMenu)
         case .portConflict, .error:
-            toggleServiceMenuItem.title = "Retry Start"
-            restartMenuItem.title = "Restart Service"
+            toggleServiceMenuItem.title = L(.retryStart)
+            restartMenuItem.title = L(.restartServiceMenu)
         default:
-            toggleServiceMenuItem.title = "Start Service"
-            restartMenuItem.title = "Restart Service"
+            toggleServiceMenuItem.title = L(.startService)
+            restartMenuItem.title = L(.restartServiceMenu)
         }
 
         // Keep the recovery notice in the tooltip too: it survives an
@@ -342,7 +353,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     guard confirmed else { return }
                     ServiceManager.shared.stopUnmanagedService(pid: pid) { [weak self] success, message in
                         if !success, let message {
-                            self?.showAlert(title: "Could Not Stop the External Service", message: message)
+                            self?.showAlert(title: L(.couldNotStopExternal), message: message)
                         }
                     }
                 }
@@ -350,7 +361,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             ServiceManager.shared.stopService { [weak self] success, message in
                 if !success, let message {
-                    self?.showAlert(title: "Could Not Stop the Service", message: message)
+                    self?.showAlert(title: L(.couldNotStopService), message: message)
                 }
             }
         } else {
@@ -369,7 +380,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard confirmed else { return }
                 ServiceManager.shared.restartUnmanagedService(pid: pid) { [weak self] success, message in
                     if !success, let message {
-                        self?.showAlert(title: "Could Not Restart the External Service", message: message)
+                        self?.showAlert(title: L(.couldNotRestartExternal), message: message)
                     }
                 }
             }
@@ -377,7 +388,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         ServiceManager.shared.restartService { [weak self] success, message in
             if !success, let message {
-                self?.showAlert(title: "Could Not Restart the Service", message: message)
+                self?.showAlert(title: L(.couldNotRestartService), message: message)
             }
         }
     }
@@ -386,7 +397,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if ServiceManager.shared.snapshot.dshPath == nil {
             DshInstallAssistant.present()
         } else {
-            showAlert(title: "Could Not Start the Service", message: message)
+            showAlert(title: L(.couldNotStartService), message: message)
         }
     }
 
@@ -395,7 +406,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: L(.ok))
         NSApplication.shared.activate(ignoringOtherApps: true)
         alert.runModal()
     }
@@ -436,8 +447,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let days = total / 86_400
         let hours = (total % 86_400) / 3_600
         let minutes = (total % 3_600) / 60
-        if days > 0 { return "\(days)d \(hours)h" }
-        if hours > 0 { return "\(hours)h \(minutes)m" }
+        if days > 0 { return L(.durationDaysHours, ["days": "\(days)", "hours": "\(hours)"]) }
+        if hours > 0 { return L(.durationHoursMinutes, ["hours": "\(hours)", "minutes": "\(minutes)"]) }
         return "\(minutes)m"
     }
 }

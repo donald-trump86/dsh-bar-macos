@@ -122,15 +122,14 @@ final class ServiceManager {
     private func preflightRestart(currentPort: Int, targetPort: Int) -> String? {
         if targetPort != currentPort {
             guard case .unavailable = probe(port: targetPort) else {
-                return "Port \(targetPort) is already in use. The service is still running on port \(currentPort)."
+                return L(.portBusyLeftRunning, ["port": "\(targetPort)", "current": "\(currentPort)"])
             }
         }
         guard findDshBinary() != nil else {
             // The likeliest cause is an uninstalled or shadowed CLI (for example
             // after switching Node versions with nvm/fnm). Refuse rather than
             // tear down a service we would not be able to bring back.
-            return "DeepSeek Harness CLI could not be found, so the running service was left untouched. "
-                + "Install it with: \(Self.installCommand)"
+            return L(.dshMissingLeftAlone, ["command": Self.installCommand])
         }
         return nil
     }
@@ -164,7 +163,7 @@ final class ServiceManager {
             guard let self else { return }
             if self.snapshot.phase.isBusy {
                 self.updateSnapshot {
-                    $0.message = "Configured port changed to \(newPort). It will apply after the current operation."
+                    $0.message = L(.portChangedAppliesLater, ["port": "\(newPort)"])
                 }
             } else if self.snapshot.isRunning {
                 // Keep the actual running port until the user restarts. Otherwise
@@ -172,7 +171,7 @@ final class ServiceManager {
                 self.updateSnapshot {
                     $0.message = newPort == $0.port
                         ? nil
-                        : "Configured port changed to \(newPort). Restart to apply it."
+                        : L(.portChangedRestartToApply, ["port": "\(newPort)"])
                 }
             } else {
                 self.updateSnapshot {
@@ -428,7 +427,7 @@ final class ServiceManager {
                 $0.port = port
                 $0.pid = pid
                 $0.startedAt = startedAt ?? $0.startedAt
-                $0.message = isManaged ? nil : "External DeepSeek Harness service"
+                $0.message = isManaged ? nil : L(.externalService)
                 $0.isManaged = isManaged
             }
         case let .foreign(pid):
@@ -442,8 +441,8 @@ final class ServiceManager {
                 $0.port = port
                 $0.pid = pid
                 $0.startedAt = nil
-                $0.message = pid.map { "Port \(port) is used by PID \($0)." }
-                    ?? "Port \(port) is already in use."
+                $0.message = pid.map { L(.portUsedByPID, ["port": "\(port)", "pid": "\($0)"]) }
+                    ?? L(.portAlreadyInUse, ["port": "\(port)"])
                 $0.isManaged = false
             }
         case .unavailable:
@@ -626,7 +625,7 @@ final class ServiceManager {
     /// normal case for an ad-hoc signed build.
     private func beginLaunch(acknowledgeCrash: Bool, completion: @escaping (Bool, String?) -> Void) {
         guard !snapshot.phase.isBusy else {
-            completion(false, "A service operation is already in progress.")
+            completion(false, L(.opInProgress))
             return
         }
         if acknowledgeCrash {
@@ -647,13 +646,13 @@ final class ServiceManager {
     /// after an automatic recovery has already made the service look healthy.
     var recoveryNotice: String? {
         if recoverySuspended {
-            return "Kept stopping, so automatic restarts were paused — start it manually to retry"
+            return L(.recoveryPaused)
         }
         guard let when = lastUnexpectedExit else { return nil }
         let formatter = DateFormatter()
         formatter.dateStyle = .none
         formatter.timeStyle = .short
-        return "Recovered after an unexpected exit at \(formatter.string(from: when))"
+        return L(.recoveredAfterExit, ["time": formatter.string(from: when)])
     }
 
     /// Clears the crash notice once the user has acted on it. Starting the
@@ -667,11 +666,11 @@ final class ServiceManager {
 
     func stopService(completion: @escaping (Bool, String?) -> Void) {
         guard !snapshot.phase.isBusy else {
-            completion(false, "A service operation is already in progress.")
+            completion(false, L(.opInProgress))
             return
         }
         guard snapshot.isManaged else {
-            completion(false, "This service was not started by DSH Bar, so it will not be stopped.")
+            completion(false, L(.notStartedByUsWontStop))
             return
         }
         let currentPort = snapshot.port
@@ -700,11 +699,11 @@ final class ServiceManager {
 
     func restartService(completion: @escaping (Bool, String?) -> Void) {
         guard !snapshot.phase.isBusy else {
-            completion(false, "A service operation is already in progress.")
+            completion(false, L(.opInProgress))
             return
         }
         guard snapshot.isManaged else {
-            completion(false, "This service was not started by DSH Bar, so it cannot be restarted safely.")
+            completion(false, L(.notStartedByUsCannotRestart))
             return
         }
         let previousSnapshot = snapshot
@@ -742,7 +741,7 @@ final class ServiceManager {
             let stopResult = self.runStopScript(port: currentPort)
             if case let .failed(reason) = stopResult {
                 DispatchQueue.main.async {
-                    let message = reason.isEmpty ? "Failed to stop the existing service." : reason
+                    let message = reason.isEmpty ? L(.failedToStopExisting) : reason
                     self.authenticatedURL = previousAuthenticatedURL
                     self.updateSnapshot {
                         $0 = previousSnapshot
@@ -754,7 +753,7 @@ final class ServiceManager {
             }
             if case .foreign = stopResult {
                 DispatchQueue.main.async {
-                    let message = "The listener on port \(currentPort) no longer matches the service started by DSH Bar."
+                    let message = L(.listenerNoLongerMatches, ["port": "\(currentPort)"])
                     self.clearManagedRecord()
                     self.updateSnapshot {
                         $0.phase = .portConflict
@@ -770,7 +769,7 @@ final class ServiceManager {
             let stoppedProbe = self.probe(port: currentPort)
             guard case .unavailable = stoppedProbe else {
                 DispatchQueue.main.async {
-                    let message = "The old service is still listening on port \(currentPort); restart was cancelled."
+                    let message = L(.oldStillListening, ["port": "\(currentPort)"])
                     self.authenticatedURL = previousAuthenticatedURL
                     self.updateSnapshot {
                         $0 = previousSnapshot
@@ -817,7 +816,7 @@ final class ServiceManager {
                     ExternalServiceInfo(
                         pid: pid,
                         port: activePort,
-                        command: command ?? "PID \(pid)"
+                        command: command ?? L(.pidLabel, ["pid": "\(pid)"])
                     )
                 )
             }
@@ -830,7 +829,7 @@ final class ServiceManager {
     /// really answers as DeepSeek Harness before signalling it.
     func stopUnmanagedService(pid: Int32, completion: @escaping (Bool, String?) -> Void) {
         guard !snapshot.phase.isBusy else {
-            completion(false, "A service operation is already in progress.")
+            completion(false, L(.opInProgress))
             return
         }
         guard snapshot.isRunning, !snapshot.isManaged else {
@@ -838,7 +837,7 @@ final class ServiceManager {
             return
         }
         guard snapshot.pid == pid else {
-            completion(false, "That process is no longer the service on this port. Refresh and try again.")
+            completion(false, L(.notTheServiceAnymore))
             return
         }
         let currentPort = snapshot.port
@@ -869,7 +868,7 @@ final class ServiceManager {
     /// management, so later Stop/Restart work without any terminal round trip.
     func restartUnmanagedService(pid: Int32, completion: @escaping (Bool, String?) -> Void) {
         guard !snapshot.phase.isBusy else {
-            completion(false, "A service operation is already in progress.")
+            completion(false, L(.opInProgress))
             return
         }
         guard snapshot.isRunning, !snapshot.isManaged else {
@@ -877,7 +876,7 @@ final class ServiceManager {
             return
         }
         guard snapshot.pid == pid else {
-            completion(false, "That process is no longer the service on this port. Refresh and try again.")
+            completion(false, L(.notTheServiceAnymore))
             return
         }
         let currentPort = snapshot.port
@@ -921,7 +920,7 @@ final class ServiceManager {
             Thread.sleep(forTimeInterval: 0.6)
             guard case .unavailable = self.probe(port: currentPort) else {
                 DispatchQueue.main.async {
-                    let message = "The external service is still listening on port \(currentPort); restart was cancelled."
+                    let message = L(.externalStillListening, ["port": "\(currentPort)"])
                     self.updateSnapshot {
                         $0.phase = .portConflict
                         $0.message = message
@@ -948,11 +947,11 @@ final class ServiceManager {
     private func unmanagedRefusalReason() -> String {
         switch snapshot.phase {
         case .portConflict:
-            return "Port \(snapshot.port) is held by a process that does not answer as DeepSeek Harness, so it was left alone."
+            return L(.portHeldNotHarness, ["port": "\(snapshot.port)"])
         case .running:
-            return "This service was started by DSH Bar, so use the normal Stop and Restart actions."
+            return L(.startedByUsUseNormal)
         default:
-            return "DeepSeek Harness is not running, so there is nothing to stop."
+            return L(.nothingToStop)
         }
     }
 
@@ -972,7 +971,7 @@ final class ServiceManager {
             completion(false, reason)
         case .stopped:
             if case .harness = probe {
-                let message = "The process was terminated but port \(port) is still serving DeepSeek Harness."
+                let message = L(.terminatedButStillServing, ["port": "\(port)"])
                 updateSnapshot {
                     $0.phase = .portConflict
                     $0.message = message
@@ -982,8 +981,8 @@ final class ServiceManager {
                 return
             }
             if case let .foreign(pid) = probe {
-                let message = pid.map { "Port \(port) is now held by PID \($0)." }
-                    ?? "Port \(port) is now held by another process."
+                let message = pid.map { L(.portNowHeldByPID, ["port": "\(port)", "pid": "\($0)"]) }
+                    ?? L(.portNowHeldByOther, ["port": "\(port)"])
                 updateSnapshot {
                     $0.phase = .portConflict
                     $0.pid = pid
@@ -1037,17 +1036,17 @@ final class ServiceManager {
             case "STOPPED":
                 return .stopped
             case "NONE":
-                return .refused("The process was already gone.")
+                return .refused(L(.processAlreadyGone))
             case "MULTIPLE-LISTENERS":
-                return .refused("Several processes listen on port \(port), so nothing was stopped.")
+                return .refused(L(.severalListeners, ["port": "\(port)"]))
             case "NOT-LISTENER":
-                return .refused("PID \(pid) no longer listens on port \(port). Nothing was stopped.")
+                return .refused(L(.pidNotListener, ["pid": "\(pid)", "port": "\(port)"]))
             case "NOT-HARNESS":
-                return .refused("PID \(pid) does not answer as DeepSeek Harness, so it was left alone.")
+                return .refused(L(.pidNotHarness, ["pid": "\(pid)"]))
             case "FORBIDDEN":
-                return .refused("PID \(pid) belongs to another user or a protected process.")
+                return .refused(L(.pidBelongsToOtherUser, ["pid": "\(pid)"]))
             default:
-                return .refused(result.isEmpty ? "Failed to stop the external service." : result)
+                return .refused(result.isEmpty ? L(.failedToStopExternal) : result)
             }
         } catch {
             return .refused(error.localizedDescription)
@@ -1082,7 +1081,7 @@ final class ServiceManager {
             guard let self else { return }
             guard let dshPath = self.findDshBinary() else {
                 DispatchQueue.main.async {
-                    let message = "DeepSeek Harness CLI is not installed. Install it with: \(Self.installCommand)"
+                    let message = L(.dshNotInstalled, ["command": Self.installCommand])
                     self.updateSnapshot {
                         $0.phase = .error
                         $0.dshPath = nil
@@ -1123,7 +1122,7 @@ final class ServiceManager {
                         guard pid == process.processIdentifier else {
                             if process.isRunning { process.terminate() }
                             self.clearManagedRecord()
-                            let message = "Port \(currentPort) is already served by a different DeepSeek Harness process."
+                            let message = L(.portServedByOther, ["port": "\(currentPort)"])
                             self.updateSnapshot {
                                 $0.phase = .portConflict
                                 $0.port = currentPort
@@ -1156,15 +1155,15 @@ final class ServiceManager {
                             $0.startedAt = detectedStart ?? launchedAt
                             $0.message = SettingsManager.shared.port == currentPort
                                 ? nil
-                                : "Configured port changed to \(SettingsManager.shared.port). Restart to apply it."
+                                : L(.portChangedRestartToApply, ["port": "\(SettingsManager.shared.port)"])
                             $0.isManaged = true
                         }
                         completion(true, nil)
                     case let .foreign(pid):
                         if process.isRunning { process.terminate() }
                         self.clearManagedRecord()
-                        let message = pid.map { "Port \(currentPort) is used by PID \($0)." }
-                            ?? "Port \(currentPort) is already in use."
+                        let message = pid.map { L(.portUsedByPID, ["port": "\(currentPort)", "pid": "\($0)"]) }
+                            ?? L(.portAlreadyInUse, ["port": "\(currentPort)"])
                         self.updateSnapshot {
                             $0.phase = .portConflict
                             $0.pid = pid
@@ -1176,7 +1175,7 @@ final class ServiceManager {
                     case .unavailable:
                         if process.isRunning { process.terminate() }
                         self.clearManagedRecord()
-                        let message = "Service did not become ready on port \(currentPort). Check the live logs for details."
+                        let message = L(.serviceNotReady, ["port": "\(currentPort)"])
                         self.updateSnapshot {
                             $0.phase = .error
                             $0.pid = nil
@@ -1189,7 +1188,7 @@ final class ServiceManager {
                 }
             } catch {
                 DispatchQueue.main.async {
-                    let message = "Failed to launch DSH: \(error.localizedDescription)"
+                    let message = L(.launchFailed, ["reason": error.localizedDescription])
                     self.updateSnapshot {
                         $0.phase = .error
                         $0.message = message
@@ -1273,14 +1272,14 @@ final class ServiceManager {
     ) {
         switch (result, probe) {
         case (_, .harness):
-            let message = "The DeepSeek Harness service is still responding on port \(port)."
+            let message = L(.stillResponding, ["port": "\(port)"])
             updateSnapshot {
                 $0.phase = .error
                 $0.message = message
             }
             completion(false, message)
         case (.foreign, _), (_, .foreign):
-            let message = "Port \(port) is used by another application. Nothing was stopped."
+            let message = L(.portUsedByAnotherApp, ["port": "\(port)"])
             // The recorded process is gone or no longer owns the port, so the
             // stored identity must not survive to a future launch.
             clearManagedRecord()
@@ -1292,7 +1291,7 @@ final class ServiceManager {
             }
             completion(false, message)
         case let (.failed(reason), _):
-            let message = reason.isEmpty ? "Failed to stop the service." : reason
+            let message = reason.isEmpty ? L(.failedToStopService) : reason
             updateSnapshot {
                 $0.phase = .error
                 $0.message = message
@@ -1465,8 +1464,8 @@ final class ServiceManager {
     private func handleUnexpectedExit(pid: Int32?, port: Int) {
         lastUnexpectedExit = Date()
         lastUnexpectedExitPID = pid
-        let description = pid.map { "PID \($0)" } ?? "the service"
-        let message = "DeepSeek Harness stopped unexpectedly (\(description) on port \(port))."
+        let description = pid.map { L(.pidLabel, ["pid": "\($0)"]) } ?? L(.theService)
+        let message = L(.stoppedUnexpectedly, ["who": description, "port": "\(port)"])
         updateSnapshot {
             $0.phase = .stopped
             $0.message = message
@@ -1483,8 +1482,10 @@ final class ServiceManager {
             // record it durably instead of looping forever.
             recoverySuspended = true
             updateSnapshot {
-                $0.message = "DeepSeek Harness keeps stopping and was not restarted again "
-                    + "(\(Self.autoRestartMaxAttempts) attempts in \(Int(Self.autoRestartWindow / 60)) minutes)."
+                $0.message = L(.keepsStopping, [
+                    "attempts": "\(Self.autoRestartMaxAttempts)",
+                    "minutes": "\(Int(Self.autoRestartWindow / 60))"
+                ])
             }
             ServiceNotifier.shared.notifyGaveUp()
             return

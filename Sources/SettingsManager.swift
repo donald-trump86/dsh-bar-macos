@@ -56,6 +56,22 @@ final class SettingsManager {
         }
     }
     
+    // MARK: - Language
+    /// Stored as the raw case name so an unknown value falls back to automatic.
+    var language: AppLanguage {
+        get {
+            guard let raw = UserDefaults.standard.string(forKey: "DSH_Language"),
+                  let value = AppLanguage(rawValue: raw) else {
+                return .automatic
+            }
+            return value
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: "DSH_Language")
+            Localization.shared.apply(language: newValue)
+        }
+    }
+
     // MARK: - Service Recovery
     /// Whether DSH Bar should bring back a service it started after an
     /// unexpected exit. Defaults to on: silently losing the console is worse
