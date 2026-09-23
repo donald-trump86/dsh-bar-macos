@@ -1,5 +1,16 @@
 import Cocoa
 
+private final class LogPanelWindow: NSWindow {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == .command, event.charactersIgnoringModifiers == "w" {
+            self.performClose(nil)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+}
+
 final class LogWindowController: NSWindowController, NSWindowDelegate, NSSearchFieldDelegate {
     static let shared = LogWindowController()
 
@@ -21,7 +32,7 @@ final class LogWindowController: NSWindowController, NSWindowDelegate, NSSearchF
     private let maximumBufferedCharacters = 1_000_000
 
     init() {
-        let window = NSWindow(
+        let window = LogPanelWindow(
             contentRect: NSRect(x: 0, y: 0, width: 780, height: 500),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,

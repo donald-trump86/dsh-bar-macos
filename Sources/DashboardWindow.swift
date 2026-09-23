@@ -2,6 +2,23 @@ import Cocoa
 import Carbon
 import ServiceManagement
 
+private final class DashboardPanelWindow: NSWindow {
+    var onCommandW: (() -> Void)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == .command, event.charactersIgnoringModifiers == "w" {
+            onCommandW?()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        onCommandW?()
+    }
+}
+
 final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     static let shared = DashboardWindowController()
     
@@ -45,7 +62,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     private var notifierObserverToken: UUID?
     
     init() {
-        let window = NSWindow(
+        let window = DashboardPanelWindow(
             contentRect: NSRect(x: 0, y: 0, width: 540, height: 792),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
@@ -62,6 +79,11 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         window.backgroundColor = .clear
         
         super.init(window: window)
+
+        window.onCommandW = { [weak self] in
+            self?.didClickClose()
+        }
+
         setupUI()
 
         NotificationCenter.default.addObserver(
@@ -643,10 +665,6 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         logsButton.translatesAutoresizingMaskIntoConstraints = false
         footer.addSubview(logsButton)
 
-        let tipLabel = makeLabel(L(.footerHints), size: 11, color: .tertiaryLabelColor)
-        tipLabel.alignment = .right
-        footer.addSubview(tipLabel)
-
         let closeButton = NSButton(title: L(.done), target: self, action: #selector(didClickClose))
         closeButton.bezelStyle = .accessoryBarAction
         closeButton.keyEquivalent = "\u{1b}"
@@ -662,11 +680,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             closeButton.trailingAnchor.constraint(equalTo: footer.trailingAnchor),
             closeButton.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
             closeButton.widthAnchor.constraint(equalToConstant: 74),
-            closeButton.heightAnchor.constraint(equalToConstant: 30),
-
-            tipLabel.leadingAnchor.constraint(greaterThanOrEqualTo: logsButton.trailingAnchor, constant: 12),
-            tipLabel.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -12),
-            tipLabel.centerYAnchor.constraint(equalTo: footer.centerYAnchor)
+            closeButton.heightAnchor.constraint(equalToConstant: 30)
         ])
 
         return footer

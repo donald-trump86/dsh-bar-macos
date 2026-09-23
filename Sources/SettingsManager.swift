@@ -41,6 +41,13 @@ final class SettingsManager {
         if UserDefaults.standard.object(forKey: keyPort) == nil {
             UserDefaults.standard.set(3080, forKey: keyPort)
         }
+        // Migrate old default hotkey (⌥ ⇧ D) to new default (⇧ ⌘ D)
+        if UserDefaults.standard.integer(forKey: keyHotKeyModifiers) == (0x0800 | 0x0200),
+           UserDefaults.standard.integer(forKey: keyHotKeyKeyCode) == 0x02,
+           UserDefaults.standard.string(forKey: keyHotKeyTitle) == "⌥ ⇧ D" {
+            UserDefaults.standard.set(Int(Self.defaultHotKeyModifiers), forKey: keyHotKeyModifiers)
+            UserDefaults.standard.set(Self.defaultHotKeyDisplay, forKey: keyHotKeyTitle)
+        }
     }
     
     // MARK: - Port Configuration
@@ -113,10 +120,10 @@ final class SettingsManager {
     }
     
     // MARK: - Global HotKey Configuration
-    // Default: Option + Shift + D (keyCode 0x02 / kVK_ANSI_D)
+    // Default: Shift + Command + D (keyCode 0x02 / kVK_ANSI_D)
     private static let defaultHotKeyKeyCode: UInt32 = 0x02
-    private static let defaultHotKeyModifiers: UInt32 = 0x0800 | 0x0200 // optionKey | shiftKey
-    private static let defaultHotKeyDisplay = "⌥ ⇧ D"
+    private static let defaultHotKeyModifiers: UInt32 = UInt32(cmdKey) | UInt32(0x0200) // cmdKey | shiftKey
+    private static let defaultHotKeyDisplay = "⇧ ⌘ D"
     
     /// `integer(forKey:)` cannot tell "unset" from a stored 0, and 0 is a real key
     /// code (kVK_ANSI_A) — recording ⌘A/⌥A used to silently fall back to the default.

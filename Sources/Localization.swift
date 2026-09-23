@@ -65,7 +65,7 @@ final class Localization {
         // Preferences rows
         case serverPort, defaultPortLabel, globalShortcut, globalShortcutDesc
         case launchAtLogin, launchAtLoginDesc, automaticRecovery, automaticRecoveryDesc
-        case notifications, notificationsDesc, dshCommandLine, footerHints
+        case notifications, notificationsDesc, dshCommandLine
         case language, languageDesc, languageAutomatic
         case searchingPath, detectingDsh, installedAt, notFoundInstallNpm
 
@@ -271,7 +271,6 @@ final class Localization {
         .notifications: "Notifications",
         .notificationsDesc: "Used to tell you when the service dies",
         .dshCommandLine: "DSH Command Line",
-        .footerHints: "Preferences: ⌘,  •  Close: Esc",
         .language: "Language",
         .languageDesc: "Applies immediately, no restart needed",
         .languageAutomatic: "Automatic",
@@ -476,7 +475,6 @@ final class Localization {
         .notifications: "通知",
         .notificationsDesc: "用于在服务异常退出时提醒你",
         .dshCommandLine: "DSH 命令行",
-        .footerHints: "偏好设置：⌘,  •  关闭：Esc",
         .language: "语言",
         .languageDesc: "立即生效，无需重启",
         .languageAutomatic: "自动",
