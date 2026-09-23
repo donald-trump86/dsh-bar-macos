@@ -66,6 +66,35 @@ final class ServiceManager {
     private var authenticatedURL: URL?
     private var managedRecord: ManagedServiceRecord?
 
+    // MARK: - Reliability state
+    //
+    // A managed service can disappear for two very different reasons: the user
+    // asked us to stop it, or it died on its own. Anything that reacts to the
+    // loss (notifications, auto-restart) must be able to tell them apart, and
+    // the second case must keep enough identity to know the service was ours.
+
+    /// Set while a stop/restart this app initiated is in flight, so the listener
+    /// going away is not mistaken for a crash.
+    private var intentionalStopInFlight = false
+    /// When the last *managed* run ended without us asking. Surfaced in the UI.
+    private(set) var lastUnexpectedExit: Date?
+    private(set) var lastUnexpectedExitPID: Int32?
+    /// Set once the recovery budget for the current window is spent. Kept until
+    /// the user acts, because `snapshot.message` is wiped by the next probe.
+    private(set) var recoverySuspended = false
+    /// Timestamps of automatic restarts already attempted, for the rate limit.
+    private var autoRestartAttempts: [Date] = []
+    private var autoRestartWorkItem: DispatchWorkItem?
+    /// Attempts allowed inside `autoRestartWindow`, with backoff between them.
+    static let autoRestartMaxAttempts = 3
+    static let autoRestartWindow: TimeInterval = 600
+    static let autoRestartBackoff: [TimeInterval] = [1, 4, 16]
+    /// User-facing switch for crash recovery.
+    var autoRestartEnabled: Bool {
+        get { SettingsManager.shared.autoRestartEnabled }
+        set { SettingsManager.shared.autoRestartEnabled = newValue }
+    }
+
     private enum ProbeResult {
         case harness(pid: Int32?, startedAt: Date?)
         case foreign(pid: Int32?)
@@ -82,6 +111,28 @@ final class ServiceManager {
         case foreign
         case none
         case failed(String)
+    }
+
+    /// Everything that must be true *before* an existing service is stopped.
+    ///
+    /// Both restart paths run this first, because a check that fails after the
+    /// stop leaves the user worse off than before they clicked: the working
+    /// service is gone and the replacement never starts. Returns a reason when
+    /// the restart must be refused, or `nil` when it is safe to proceed.
+    private func preflightRestart(currentPort: Int, targetPort: Int) -> String? {
+        if targetPort != currentPort {
+            guard case .unavailable = probe(port: targetPort) else {
+                return "Port \(targetPort) is already in use. The service is still running on port \(currentPort)."
+            }
+        }
+        guard findDshBinary() != nil else {
+            // The likeliest cause is an uninstalled or shadowed CLI (for example
+            // after switching Node versions with nvm/fnm). Refuse rather than
+            // tear down a service we would not be able to bring back.
+            return "DeepSeek Harness CLI could not be found, so the running service was left untouched. "
+                + "Install it with: \(Self.installCommand)"
+        }
+        return nil
     }
 
     private struct ManagedServiceRecord: Codable {
@@ -351,14 +402,23 @@ final class ServiceManager {
             consecutiveProbeMisses = 0
             let previousPID = snapshot.pid
             var isManaged = false
-            if let record = managedRecord,
-               record.port == port,
-               record.pid == pid,
-               let startedAt,
-               abs(startedAt.timeIntervalSince(record.startedAt)) < 5 {
-                isManaged = true
-            } else if managedRecord?.port == port {
-                clearManagedRecord()
+            // Only ever discard the record on *conclusive* evidence that the
+            // listener is not ours. `startedAt` comes from `ps`, which can fail
+            // transiently; treating that as "not ours" would silently demote a
+            // healthy managed service to external and erase its identity. The
+            // destructive paths re-verify independently anyway, so being
+            // conservative here costs nothing.
+            if let record = managedRecord, record.port == port {
+                if record.pid == pid {
+                    if let startedAt, abs(startedAt.timeIntervalSince(record.startedAt)) >= 5 {
+                        // Measured start time disagrees: the PID was reused.
+                        clearManagedRecord()
+                    } else {
+                        isManaged = true
+                    }
+                } else {
+                    clearManagedRecord()
+                }
             }
             if previousPID != pid {
                 authenticatedURL = nil
@@ -393,7 +453,13 @@ final class ServiceManager {
             }
             consecutiveProbeMisses = 0
             authenticatedURL = nil
-            if managedRecord?.port == port {
+            // Decide *before* the identity is dropped whether this disappearance
+            // was ours to expect. Only an unrequested loss of a service we
+            // started counts as a crash.
+            let ownedByUs = managedRecord?.port == port
+            let wasIntentional = intentionalStopInFlight
+            let lostPID = snapshot.pid
+            if ownedByUs {
                 clearManagedRecord()
             }
             updateSnapshot {
@@ -403,6 +469,9 @@ final class ServiceManager {
                 $0.startedAt = nil
                 $0.message = nil
                 $0.isManaged = false
+            }
+            if ownedByUs, !wasIntentional {
+                handleUnexpectedExit(pid: lostPID, port: port)
             }
         }
     }
@@ -545,9 +614,26 @@ final class ServiceManager {
     // MARK: - Service Lifecycle
 
     func startService(completion: @escaping (Bool, String?) -> Void) {
+        beginLaunch(acknowledgeCrash: true, completion: completion)
+    }
+
+    /// Shared launch entry point.
+    ///
+    /// `acknowledgeCrash` separates the two callers that matter: a person
+    /// clicking Start has seen the notice, whereas a recovery restart has not —
+    /// and must not erase the only evidence that the service ever died. That
+    /// matters most exactly when notifications are unavailable, which is the
+    /// normal case for an ad-hoc signed build.
+    private func beginLaunch(acknowledgeCrash: Bool, completion: @escaping (Bool, String?) -> Void) {
         guard !snapshot.phase.isBusy else {
             completion(false, "A service operation is already in progress.")
             return
+        }
+        if acknowledgeCrash {
+            // The first start is the moment notifications become relevant, so
+            // that is when macOS is asked — not on launch, and not every time.
+            ServiceNotifier.shared.requestAuthorizationIfNeeded()
+            acknowledgeUnexpectedExit()
         }
         authenticatedURL = nil
         updateSnapshot {
@@ -555,6 +641,28 @@ final class ServiceManager {
             $0.message = nil
         }
         launchAndWait(completion: completion)
+    }
+
+    /// Describes a crash that is still unacknowledged, so the UI can show it
+    /// after an automatic recovery has already made the service look healthy.
+    var recoveryNotice: String? {
+        if recoverySuspended {
+            return "Kept stopping, so automatic restarts were paused — start it manually to retry"
+        }
+        guard let when = lastUnexpectedExit else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        return "Recovered after an unexpected exit at \(formatter.string(from: when))"
+    }
+
+    /// Clears the crash notice once the user has acted on it. Starting the
+    /// service again also resets the recovery budget.
+    func acknowledgeUnexpectedExit() {
+        recoverySuspended = false
+        guard lastUnexpectedExit != nil else { return }
+        lastUnexpectedExit = nil
+        lastUnexpectedExitPID = nil
     }
 
     func stopService(completion: @escaping (Bool, String?) -> Void) {
@@ -567,6 +675,12 @@ final class ServiceManager {
             return
         }
         let currentPort = snapshot.port
+        // The user is taking control: a disappearance from here on is expected,
+        // a recovery that was already queued must not fire underneath them, and
+        // the previous crash notice has been seen.
+        cancelPendingAutoRestart()
+        acknowledgeUnexpectedExit()
+        beginIntentionalStop()
         updateSnapshot {
             $0.phase = .stopping
             $0.message = nil
@@ -578,6 +692,7 @@ final class ServiceManager {
             Thread.sleep(forTimeInterval: 0.35)
             let probe = self.probe(port: currentPort)
             DispatchQueue.main.async {
+                self.endIntentionalStop()
                 self.finishStop(result: result, probe: probe, port: currentPort, completion: completion)
             }
         }
@@ -596,7 +711,15 @@ final class ServiceManager {
         let previousAuthenticatedURL = authenticatedURL
         let currentPort = snapshot.isRunning ? snapshot.port : port
         let targetPort = port
+        cancelPendingAutoRestart()
         authenticatedURL = nil
+        // Everything from here until `finish` runs is our own doing, so a
+        // listener that goes missing mid-restart is never a crash.
+        beginIntentionalStop()
+        let finish: (Bool, String?) -> Void = { [weak self] success, message in
+            self?.endIntentionalStop()
+            completion(success, message)
+        }
         updateSnapshot {
             $0.phase = .restarting
             $0.message = nil
@@ -604,22 +727,16 @@ final class ServiceManager {
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
-            if targetPort != currentPort {
-                let targetProbe = self.probe(port: targetPort)
-                if case .unavailable = targetProbe {
-                    // Safe to move the service after confirming the new port is free.
-                } else {
-                    DispatchQueue.main.async {
-                        let message = "Port \(targetPort) is already in use. The service is still running on port \(currentPort)."
-                        self.authenticatedURL = previousAuthenticatedURL
-                        self.updateSnapshot {
-                            $0 = previousSnapshot
-                            $0.message = message
-                        }
-                        completion(false, message)
+            if let reason = self.preflightRestart(currentPort: currentPort, targetPort: targetPort) {
+                DispatchQueue.main.async {
+                    self.authenticatedURL = previousAuthenticatedURL
+                    self.updateSnapshot {
+                        $0 = previousSnapshot
+                        $0.message = reason
                     }
-                    return
+                    finish(false, reason)
                 }
+                return
             }
 
             let stopResult = self.runStopScript(port: currentPort)
@@ -631,7 +748,7 @@ final class ServiceManager {
                         $0 = previousSnapshot
                         $0.message = message
                     }
-                    completion(false, message)
+                    finish(false, message)
                 }
                 return
             }
@@ -644,7 +761,7 @@ final class ServiceManager {
                         $0.message = message
                         $0.isManaged = false
                     }
-                    completion(false, message)
+                    finish(false, message)
                 }
                 return
             }
@@ -659,14 +776,14 @@ final class ServiceManager {
                         $0 = previousSnapshot
                         $0.message = message
                     }
-                    completion(false, message)
+                    finish(false, message)
                 }
                 return
             }
 
             DispatchQueue.main.async {
                 self.clearManagedRecord()
-                self.launchAndWait(completion: completion)
+                self.launchAndWait(completion: finish)
             }
         }
     }
@@ -725,6 +842,8 @@ final class ServiceManager {
             return
         }
         let currentPort = snapshot.port
+        cancelPendingAutoRestart()
+        beginIntentionalStop()
         updateSnapshot {
             $0.phase = .stopping
             $0.message = nil
@@ -763,6 +882,7 @@ final class ServiceManager {
         }
         let currentPort = snapshot.port
         let targetPort = port
+        let previousSnapshot = snapshot
         authenticatedURL = nil
         updateSnapshot {
             $0.phase = .restarting
@@ -771,6 +891,20 @@ final class ServiceManager {
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
+            // Refuse BEFORE touching the external service: it is not ours to
+            // kill if we cannot put an equivalent one back in its place.
+            if let reason = self.preflightRestart(currentPort: currentPort, targetPort: targetPort) {
+                DispatchQueue.main.async {
+                    self.updateSnapshot {
+                        $0 = previousSnapshot
+                        $0.message = reason
+                        $0.isManaged = false
+                    }
+                    completion(false, reason)
+                }
+                return
+            }
+
             let outcome = self.runExternalStopScript(port: currentPort, pid: pid)
             guard case .stopped = outcome else {
                 DispatchQueue.main.async {
@@ -796,22 +930,6 @@ final class ServiceManager {
                     completion(false, message)
                 }
                 return
-            }
-
-            if targetPort != currentPort {
-                guard case .unavailable = self.probe(port: targetPort) else {
-                    DispatchQueue.main.async {
-                        let message = "Port \(targetPort) is already in use, so the service was not restarted."
-                        self.updateSnapshot {
-                            $0.phase = .portConflict
-                            $0.port = targetPort
-                            $0.message = message
-                            $0.isManaged = false
-                        }
-                        completion(false, message)
-                    }
-                    return
-                }
             }
 
             DispatchQueue.main.async {
@@ -1017,10 +1135,16 @@ final class ServiceManager {
                             completion(false, message)
                             return
                         }
+                        // Store the *process's* start time, not the moment we
+                        // called spawn: probes compare this against `ps etime`,
+                        // and using our own call time would fold node's cold
+                        // start into the comparison. A slow start would then
+                        // look like PID reuse and silently demote a healthy
+                        // managed service to external.
                         let record = ManagedServiceRecord(
                             pid: process.processIdentifier,
                             port: currentPort,
-                            startedAt: launchedAt,
+                            startedAt: detectedStart ?? launchedAt,
                             executablePath: dshPath
                         )
                         self.saveManagedRecord(record)
@@ -1331,6 +1455,110 @@ final class ServiceManager {
     echo "STOPPED"
     exit 0
     """
+
+    // MARK: - Unexpected exit and recovery
+
+    /// A service we started vanished without being asked to. Notify, then try a
+    /// bounded restart. External services are deliberately never resurrected:
+    /// their lifetime belongs to the terminal that started them, where a
+    /// deliberate Ctrl-C is indistinguishable from a crash.
+    private func handleUnexpectedExit(pid: Int32?, port: Int) {
+        lastUnexpectedExit = Date()
+        lastUnexpectedExitPID = pid
+        let description = pid.map { "PID \($0)" } ?? "the service"
+        let message = "DeepSeek Harness stopped unexpectedly (\(description) on port \(port))."
+        updateSnapshot {
+            $0.phase = .stopped
+            $0.message = message
+        }
+        ServiceNotifier.shared.notifyUnexpectedExit(pid: pid, port: port)
+        scheduleAutoRestart()
+    }
+
+    private func scheduleAutoRestart() {
+        guard autoRestartEnabled else { return }
+        pruneAutoRestartAttempts()
+        guard autoRestartAttempts.count < Self.autoRestartMaxAttempts else {
+            // Already recovered as often as we allow in this window. Stop, and
+            // record it durably instead of looping forever.
+            recoverySuspended = true
+            updateSnapshot {
+                $0.message = "DeepSeek Harness keeps stopping and was not restarted again "
+                    + "(\(Self.autoRestartMaxAttempts) attempts in \(Int(Self.autoRestartWindow / 60)) minutes)."
+            }
+            ServiceNotifier.shared.notifyGaveUp()
+            return
+        }
+
+        let index = min(autoRestartAttempts.count, Self.autoRestartBackoff.count - 1)
+        let delay = Self.autoRestartBackoff[index]
+        autoRestartAttempts.append(Date())
+
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.autoRestartWorkItem = nil
+            // The user may have started it themselves, or stopped everything, in
+            // the meantime. Only act if the service is still down.
+            guard !self.snapshot.isRunning, !self.snapshot.phase.isBusy else { return }
+            self.beginLaunch(acknowledgeCrash: false) { success, message in
+                if success {
+                    ServiceNotifier.shared.notifyAutoRestarted(
+                        attempt: self.autoRestartAttempts.count
+                    )
+                } else {
+                    ServiceNotifier.shared.notifyUnexpectedExit(pid: nil, port: self.port)
+                    self.scheduleAutoRestart()
+                }
+            }
+        }
+        autoRestartWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+    }
+
+    /// Drops attempts that fell outside the rate-limit window.
+    private func pruneAutoRestartAttempts() {
+        let cutoff = Date().addingTimeInterval(-Self.autoRestartWindow)
+        autoRestartAttempts.removeAll { $0 < cutoff }
+    }
+
+    /// Cancels a queued recovery. Called whenever the user takes control, so a
+    /// deliberate stop is never undone by a pending automatic restart.
+    func cancelPendingAutoRestart() {
+        autoRestartWorkItem?.cancel()
+        autoRestartWorkItem = nil
+        autoRestartAttempts.removeAll()
+    }
+
+    /// Marks the next disappearance as expected. Paired with
+    /// `endIntentionalStop()` on every exit path of a stop/restart.
+    private func beginIntentionalStop() {
+        intentionalStopInFlight = true
+    }
+
+    private func endIntentionalStop() {
+        intentionalStopInFlight = false
+    }
+
+    /// Called on quit so nothing fires while the app is being torn down. The
+    /// managed record is intentionally left on disk: that is what lets a later
+    /// launch re-adopt a service that is still running.
+    func prepareForTermination() {
+        stopMonitoring()
+        autoRestartWorkItem?.cancel()
+        autoRestartWorkItem = nil
+    }
+
+    /// Quit path that also stops the service DSH Bar started.
+    func stopServiceForQuit(completion: @escaping (Bool, String?) -> Void) {
+        cancelPendingAutoRestart()
+        guard snapshot.isRunning, snapshot.isManaged else {
+            // Nothing of ours is running; quitting must not touch a service the
+            // user started elsewhere.
+            completion(true, nil)
+            return
+        }
+        stopService(completion: completion)
+    }
 
     // MARK: - User Actions
 

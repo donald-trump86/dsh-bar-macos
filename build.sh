@@ -36,6 +36,7 @@ SOURCE_FILES=(
     Sources/LogWindow.swift
     Sources/DshInstallAssistant.swift
     Sources/ExternalServicePrompt.swift
+    Sources/ServiceNotifier.swift
 )
 COMMON_SWIFT_FLAGS=(
     -O
@@ -46,6 +47,7 @@ COMMON_SWIFT_FLAGS=(
     -framework Cocoa
     -framework Carbon
     -framework ServiceManagement
+    -framework UserNotifications
 )
 
 mkdir -p build

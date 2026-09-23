@@ -29,16 +29,20 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     private let hotKeyResetButton = NSButton()
     private let dshInfoLabel = NSTextField(labelWithString: "Detecting DSH CLI…")
     private let dshActionButton = NSButton()
+    private let autoRestartCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let notificationInfoLabel = NSTextField(labelWithString: "Checking notification permission…")
+    private let notificationActionButton = NSButton()
     
     private var localEventMonitor: Any?
     private var isRecordingHotKey = false
     private var copyFeedbackTimer: Timer?
     private var statusObserverToken: UUID?
     private var portObserverToken: UUID?
+    private var notifierObserverToken: UUID?
     
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 540, height: 630),
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 738),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -78,6 +82,11 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         portObserverToken = SettingsManager.shared.addPortObserver { [weak self] port in
             self?.updateUrlDisplay(port: port)
         }
+        // Notification availability can change while the panel is open, so the
+        // recovery row has to follow it rather than only refreshing on reopen.
+        notifierObserverToken = ServiceNotifier.shared.addObserver { [weak self] in
+            self?.updateNotificationRow()
+        }
     }
     
     required init?(coder: NSCoder) {
@@ -86,6 +95,9 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        if let token = notifierObserverToken {
+            ServiceNotifier.shared.removeObserver(token)
+        }
     }
 
     @objc private func panelDidBecomeKey() {
@@ -100,6 +112,8 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     override func showWindow(_ sender: Any?) {
         // Always reflect the latest state when the panel is brought up.
         updateState(ServiceManager.shared.snapshot)
+        updateNotificationRow()
+        autoRestartCheckbox.state = SettingsManager.shared.autoRestartEnabled ? .on : .off
         ServiceManager.shared.detectDshInstallation()
         // Re-float explicitly: the panel may have been dropped to the normal
         // level when it lost focus before being closed.
@@ -140,7 +154,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             preferencesCard.topAnchor.constraint(equalTo: serviceCard.bottomAnchor, constant: 14),
             preferencesCard.leadingAnchor.constraint(equalTo: header.leadingAnchor),
             preferencesCard.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-            preferencesCard.heightAnchor.constraint(equalToConstant: 270),
+            preferencesCard.heightAnchor.constraint(equalToConstant: 378),
 
             footer.leadingAnchor.constraint(equalTo: header.leadingAnchor),
             footer.trailingAnchor.constraint(equalTo: header.trailingAnchor),
@@ -385,6 +399,51 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         let separator3 = makeSeparator()
         card.addSubview(separator3)
 
+        let recoveryRow = NSView()
+        recoveryRow.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(recoveryRow)
+
+        let recoveryText = makeTextStack(
+            title: "Automatic Recovery",
+            description: "Restart a service DSH Bar started if it exits unexpectedly"
+        )
+        recoveryRow.addSubview(recoveryText)
+
+        autoRestartCheckbox.state = SettingsManager.shared.autoRestartEnabled ? .on : .off
+        autoRestartCheckbox.target = self
+        autoRestartCheckbox.action = #selector(didToggleAutoRestart)
+        autoRestartCheckbox.translatesAutoresizingMaskIntoConstraints = false
+        recoveryRow.addSubview(autoRestartCheckbox)
+
+        let separator4 = makeSeparator()
+        card.addSubview(separator4)
+
+        let notificationRow = NSView()
+        notificationRow.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(notificationRow)
+
+        notificationInfoLabel.font = NSFont.systemFont(ofSize: 11)
+        notificationInfoLabel.textColor = .secondaryLabelColor
+        notificationInfoLabel.lineBreakMode = .byTruncatingTail
+        notificationInfoLabel.translatesAutoresizingMaskIntoConstraints = false
+        let notificationText = makeTextStack(
+            title: "Notifications",
+            description: "Used to tell you when the service dies"
+        )
+        notificationText.addArrangedSubview(notificationInfoLabel)
+        notificationRow.addSubview(notificationText)
+
+        notificationActionButton.title = "Open Settings…"
+        notificationActionButton.bezelStyle = .rounded
+        notificationActionButton.controlSize = .small
+        notificationActionButton.target = self
+        notificationActionButton.action = #selector(didClickNotificationAction)
+        notificationActionButton.translatesAutoresizingMaskIntoConstraints = false
+        notificationRow.addSubview(notificationActionButton)
+
+        let separator5 = makeSeparator()
+        card.addSubview(separator5)
+
         let dshRow = NSView()
         dshRow.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(dshRow)
@@ -471,7 +530,39 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             separator3.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
             separator3.heightAnchor.constraint(equalToConstant: 1),
 
-            dshRow.topAnchor.constraint(equalTo: separator3.bottomAnchor),
+            recoveryRow.topAnchor.constraint(equalTo: separator3.bottomAnchor),
+            recoveryRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
+            recoveryRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
+            recoveryRow.heightAnchor.constraint(equalToConstant: 54),
+
+            recoveryText.leadingAnchor.constraint(equalTo: recoveryRow.leadingAnchor),
+            recoveryText.centerYAnchor.constraint(equalTo: recoveryRow.centerYAnchor),
+            recoveryText.trailingAnchor.constraint(lessThanOrEqualTo: autoRestartCheckbox.leadingAnchor, constant: -12),
+            autoRestartCheckbox.trailingAnchor.constraint(equalTo: recoveryRow.trailingAnchor),
+            autoRestartCheckbox.centerYAnchor.constraint(equalTo: recoveryRow.centerYAnchor),
+
+            separator4.topAnchor.constraint(equalTo: recoveryRow.bottomAnchor),
+            separator4.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
+            separator4.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
+            separator4.heightAnchor.constraint(equalToConstant: 1),
+
+            notificationRow.topAnchor.constraint(equalTo: separator4.bottomAnchor),
+            notificationRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
+            notificationRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
+            notificationRow.heightAnchor.constraint(equalToConstant: 54),
+
+            notificationText.leadingAnchor.constraint(equalTo: notificationRow.leadingAnchor),
+            notificationText.centerYAnchor.constraint(equalTo: notificationRow.centerYAnchor),
+            notificationText.trailingAnchor.constraint(lessThanOrEqualTo: notificationActionButton.leadingAnchor, constant: -12),
+            notificationActionButton.trailingAnchor.constraint(equalTo: notificationRow.trailingAnchor),
+            notificationActionButton.centerYAnchor.constraint(equalTo: notificationRow.centerYAnchor),
+
+            separator5.topAnchor.constraint(equalTo: notificationRow.bottomAnchor),
+            separator5.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
+            separator5.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
+            separator5.heightAnchor.constraint(equalToConstant: 1),
+
+            dshRow.topAnchor.constraint(equalTo: separator5.bottomAnchor),
             dshRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
             dshRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
             dshRow.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
@@ -639,10 +730,18 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         if let uptime = snapshot.uptime { details.append("Up \(Self.formatDuration(uptime))") }
         if let version = snapshot.dshVersion { details.append("DSH \(version)") }
         if let message = snapshot.message { details.append(message) }
+        // An automatic restart restores the service but must not bury the fact
+        // that it died: notifications may never have been delivered at all.
+        if let notice = ServiceManager.shared.recoveryNotice { details.append(notice) }
         if details.isEmpty {
             details.append(snapshot.phase == .stopped ? "Service is not running" : "Checking service status…")
         }
         serviceDetailsLabel.stringValue = details.joined(separator: "  •  ")
+        if ServiceManager.shared.recoveryNotice != nil {
+            serviceDetailsLabel.textColor = .systemOrange
+        } else {
+            serviceDetailsLabel.textColor = .secondaryLabelColor
+        }
 
         let busy = snapshot.phase.isBusy || snapshot.phase == .checking
         // A service started outside DSH Bar stays fully controllable, but every
@@ -927,6 +1026,40 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     @objc private func didToggleLaunchAtLogin() {
         let enabled = (launchAtLoginCheckbox.state == .on)
         SettingsManager.shared.isLaunchAtLoginEnabled = enabled
+    }
+
+    @objc private func didToggleAutoRestart() {
+        let enabled = (autoRestartCheckbox.state == .on)
+        ServiceManager.shared.autoRestartEnabled = enabled
+        if !enabled {
+            ServiceManager.shared.cancelPendingAutoRestart()
+        }
+    }
+
+    @objc private func didClickNotificationAction() {
+        ServiceNotifier.shared.requestAuthorizationIfNeeded {
+            ServiceNotifier.shared.refreshAvailability()
+        }
+        ServiceNotifier.shared.openSystemNotificationSettings()
+    }
+
+    /// Keeps the recovery row honest. A notification that silently never arrives
+    /// is the worst failure mode for this feature, so the panel states the
+    /// condition instead of implying everything is fine.
+    private func updateNotificationRow() {
+        let notifier = ServiceNotifier.shared
+        notificationInfoLabel.stringValue = notifier.availability.shortDescription
+        switch notifier.availability {
+        case .available:
+            notificationInfoLabel.textColor = .secondaryLabelColor
+            notificationActionButton.title = "Settings…"
+        case .unknown:
+            notificationInfoLabel.textColor = .secondaryLabelColor
+            notificationActionButton.title = "Enable…"
+        case .denied, .unusable:
+            notificationInfoLabel.textColor = .systemOrange
+            notificationActionButton.title = "Fix…"
+        }
     }
     
     @objc private func didClickClose() {

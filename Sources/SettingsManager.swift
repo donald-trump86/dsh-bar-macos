@@ -56,6 +56,22 @@ final class SettingsManager {
         }
     }
     
+    // MARK: - Service Recovery
+    /// Whether DSH Bar should bring back a service it started after an
+    /// unexpected exit. Defaults to on: silently losing the console is worse
+    /// than a bounded restart. External services are never affected by this.
+    var autoRestartEnabled: Bool {
+        get {
+            guard UserDefaults.standard.object(forKey: "DSH_AutoRestart") != nil else {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: "DSH_AutoRestart")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "DSH_AutoRestart")
+        }
+    }
+
     // MARK: - Launch At Login
     var isLaunchAtLoginEnabled: Bool {
         get {

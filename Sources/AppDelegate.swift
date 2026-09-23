@@ -12,6 +12,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var copyUrlMenuItem: NSMenuItem!
     private var logsMenuItem: NSMenuItem!
     private var dashboardMenuItem: NSMenuItem!
+    private var quitAndStopMenuItem: NSMenuItem!
+    private var notifierObserverToken: UUID?
+    /// Set by `Quit & Stop Service…` so `applicationShouldTerminate` knows the
+    /// user asked for the service to go away too, and can wait for the stop.
+    private var pendingQuitStopsService = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
@@ -32,9 +37,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.updateUI(snapshot: snapshot)
         }
 
+        // Notifications are the channel that reaches the user while they are
+        // looking somewhere else. Activate the delegate now; the permission
+        // prompt waits until a service is actually started.
+        ServiceNotifier.shared.activate()
+        notifierObserverToken = ServiceNotifier.shared.addObserver { [weak self] in
+            self?.updateUI(snapshot: ServiceManager.shared.snapshot)
+        }
+        ServiceNotifier.shared.refreshAvailability()
+
         // Start quietly. The Web console only opens from Open Web or its global
         // shortcut, never from app launch, Start Service, or Restart Service.
         ServiceManager.shared.startMonitoring()
+    }
+
+    /// Quit keeps the service running by default (that is what the menu bar
+    /// icon disappearing should mean for a background console), so nothing is
+    /// stopped here. `Quit & Stop Service…` opts into the other behaviour.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if pendingQuitStopsService {
+            pendingQuitStopsService = false
+            ServiceManager.shared.stopServiceForQuit { _, _ in
+                NSApplication.shared.reply(toApplicationShouldTerminate: true)
+            }
+            return .terminateLater
+        }
+        ServiceManager.shared.prepareForTermination()
+        return .terminateNow
     }
 
     private func setupStatusItem() {
@@ -55,17 +84,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// An unacknowledged unexpected exit is worth showing even when the service
+    /// is stopped or already recovered, because it is the fallback channel for
+    /// the case where no notification reached the user.
+    private var hasRecoveryAlert: Bool {
+        ServiceManager.shared.lastUnexpectedExit != nil
+    }
+
     private func updateMenuBarIndicator(for phase: ServicePhase) {
         guard let button = statusItem.button else { return }
         let title = NSMutableAttributedString(
             string: "🐳 ",
             attributes: [.font: NSFont.systemFont(ofSize: 15)]
         )
+        let dotColor: NSColor
+        if hasRecoveryAlert, phase != .running {
+            // Never let a crash look like a normal stop.
+            dotColor = .systemRed
+        } else {
+            dotColor = color(for: phase)
+        }
         title.append(NSAttributedString(
             string: "●",
             attributes: [
                 .font: NSFont.systemFont(ofSize: 10, weight: .bold),
-                .foregroundColor: color(for: phase)
+                .foregroundColor: dotColor
             ]
         ))
         button.image = nil
@@ -212,6 +255,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         quitMenuItem.target = self
         menu.addItem(quitMenuItem)
 
+        // The two quits differ in what happens to the service, so the titles say
+        // so rather than relying on the user remembering.
+        quitAndStopMenuItem = NSMenuItem(
+            title: "Quit & Stop Service…",
+            action: #selector(didSelectQuitAndStopService),
+            keyEquivalent: "q"
+        )
+        quitAndStopMenuItem.keyEquivalentModifierMask = [.command, .option]
+        quitAndStopMenuItem.target = self
+        menu.addItem(quitAndStopMenuItem)
+
         statusItem.menu = menu
     }
 
@@ -267,7 +321,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             restartMenuItem.title = "Restart Service"
         }
 
-        statusItem.button?.toolTip = statusTitle(for: snapshot)
+        // Keep the recovery notice in the tooltip too: it survives an
+        // automatic restart, which the status line alone would hide.
+        let base = statusTitle(for: snapshot)
+        statusItem.button?.toolTip = ServiceManager.shared.recoveryNotice.map { "\(base) — \($0)" } ?? base
+
+        // Nothing of ours is running, so there is nothing to stop on the way out.
+        quitAndStopMenuItem.isEnabled = snapshot.isRunning && snapshot.isManaged
     }
 
     @objc private func didSelectOpenWeb() {
@@ -354,6 +414,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func didSelectQuit() {
+        // Default: the service DSH Bar started keeps running, and the managed
+        // record stays on disk so a later launch re-adopts it.
+        NSApplication.shared.terminate(nil)
+    }
+
+    @objc private func didSelectQuitAndStopService() {
+        let snapshot = ServiceManager.shared.snapshot
+        // Only a service we started is ours to stop. For anything else, say so
+        // instead of quietly doing nothing, then quit with the service intact.
+        guard snapshot.isRunning, snapshot.isManaged else {
+            NSApplication.shared.terminate(nil)
+            return
+        }
+        pendingQuitStopsService = true
         NSApplication.shared.terminate(nil)
     }
 
