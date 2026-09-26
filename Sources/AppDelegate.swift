@@ -26,6 +26,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupMenu()
         setupHotKeys()
 
+        // Registration can fail at launch if another app took the shortcut
+        // while this one was closed. Say so once, instead of leaving a dead
+        // hot key in the preferences with nothing on screen to explain it.
+        if let status = HotKeyManager.shared.lastRegistrationStatus {
+            showAlert(
+                title: L(.hotKeyConflictTitle),
+                message: L(.hotKeyConflict, [
+                    "keys": SettingsManager.shared.globalHotKeyDisplayString,
+                    "code": "\(status)"
+                ])
+            )
+        }
+
         SettingsManager.shared.onHotKeyChanged = { [weak self] in
             self?.setupHotKeys()
         }

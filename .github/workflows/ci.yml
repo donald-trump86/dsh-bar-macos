@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+
+      # Catches a build that no longer compiles, which until now was only
+      # discovered when a release tag happened to be pushed.
+      - name: Build universal app
+        env:
+          CLANG_MODULE_CACHE_PATH: ${{ runner.temp }}/module-cache
+        run: ./build.sh
+
+      # Translation drift and a stale app name fail silently at runtime, so
+      # they are asserted here instead of in review.
+      - name: Run consistency checks
+        run: ./Tests/run-checks.sh

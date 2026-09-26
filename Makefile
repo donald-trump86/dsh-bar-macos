@@ -1,4 +1,4 @@
-.PHONY: all build install clean run
+.PHONY: all build install clean run check
 
 all: build
 
@@ -11,7 +11,10 @@ install:
 	@./build.sh install
 
 run: install
-	@open -a "DSH Bar"
+	@open -a "DeepSeek Harness Bar"
+
+check:
+	@./Tests/run-checks.sh
 
 clean:
 	@rm -rf build
