@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Build and package DSH Bar as a macOS application bundle.
+# Build and package DeepSeek Harness Bar as a macOS application bundle.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-APP_NAME="DSH Bar"
+APP_NAME="DeepSeek Harness Bar"
 BUNDLE_DIR="build/${APP_NAME}.app"
 BINARY_NAME="dsh-bar"
 DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"

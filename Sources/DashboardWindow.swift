@@ -55,6 +55,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     private var lastEffectiveLanguage: AppLanguage = Localization.shared.effective
     
     private var localEventMonitor: Any?
+    private var globalEventMonitor: Any?
     private var isRecordingHotKey = false
     private var copyFeedbackTimer: Timer?
     private var statusObserverToken: UUID?
@@ -1050,16 +1051,105 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             
             let keyString = event.charactersIgnoringModifiers?.uppercased() ?? "Key"
             let display = "\(symbols)\(keyString)"
-            
+
+            // Refuse a combination another app already owns *before* storing
+            // it. Persisting first used to leave the preference showing a
+            // shortcut that could never fire, with nothing on screen to say so.
+            // The conflict check is global, so our own hot key has to come off
+            // first or every probe would collide with it.
+            HotKeyManager.shared.unregister(id: 1)
+            guard HotKeyManager.shared.isAvailable(keyCode: UInt32(event.keyCode), modifiers: carbonModifiers) else {
+                SettingsManager.shared.onHotKeyChanged?()
+                self.showHotKeyConflict(display)
+                self.stopRecording(cancelled: true)
+                return nil
+            }
+
             SettingsManager.shared.updateGlobalHotKey(
                 keyCode: UInt32(event.keyCode),
                 modifiers: carbonModifiers,
                 display: display
             )
-            
+
+            if let status = HotKeyManager.shared.lastRegistrationStatus {
+                showHotKeyConflict(display, status: status)
+            }
+
             self.stopRecording(cancelled: false)
             return nil
         }
+
+        // A local monitor only sees keys sent to this app, so recording
+        // silently froze whenever the panel lost focus mid-recording. The
+        // global monitor covers the other half; both are needed because they
+        // are mutually exclusive by design.
+        globalEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+            self?.handleRecordedKey(event)
+        }
+    }
+
+    private func handleRecordedKey(_ event: NSEvent) {
+        guard isRecordingHotKey else { return }
+        if event.keyCode == 53 {
+            stopRecording(cancelled: true)
+            return
+        }
+
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command) || flags.contains(.option) || flags.contains(.control) || flags.contains(.shift) else {
+            return
+        }
+
+        var carbonModifiers: UInt32 = 0
+        var symbols = ""
+        if flags.contains(.control) {
+            carbonModifiers |= UInt32(controlKey)
+            symbols += "⌃ "
+        }
+        if flags.contains(.option) {
+            carbonModifiers |= UInt32(0x0800) // optionKey
+            symbols += "⌥ "
+        }
+        if flags.contains(.shift) {
+            carbonModifiers |= UInt32(0x0200) // shiftKey
+            symbols += "⇧ "
+        }
+        if flags.contains(.command) {
+            carbonModifiers |= UInt32(cmdKey)
+            symbols += "⌘ "
+        }
+
+        let keyString = event.charactersIgnoringModifiers?.uppercased() ?? "Key"
+        let display = "\(symbols)\(keyString)"
+
+        HotKeyManager.shared.unregister(id: 1)
+        guard HotKeyManager.shared.isAvailable(keyCode: UInt32(event.keyCode), modifiers: carbonModifiers) else {
+            SettingsManager.shared.onHotKeyChanged?()
+            showHotKeyConflict(display)
+            stopRecording(cancelled: true)
+            return
+        }
+
+        SettingsManager.shared.updateGlobalHotKey(
+            keyCode: UInt32(event.keyCode),
+            modifiers: carbonModifiers,
+            display: display
+        )
+
+        if let status = HotKeyManager.shared.lastRegistrationStatus {
+            showHotKeyConflict(display, status: status)
+        }
+        stopRecording(cancelled: false)
+    }
+
+    private func showHotKeyConflict(_ display: String, status: OSStatus? = nil) {
+        showAlert(
+            title: L(.hotKeyConflictTitle),
+            message: L(.hotKeyConflict, [
+                "keys": display,
+                "code": status.map { "\($0)" } ?? ""
+            ])
+        )
     }
     
     private func stopRecording(cancelled: Bool) {
@@ -1067,6 +1157,10 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         if let monitor = localEventMonitor {
             NSEvent.removeMonitor(monitor)
             localEventMonitor = nil
+        }
+        if let monitor = globalEventMonitor {
+            NSEvent.removeMonitor(monitor)
+            globalEventMonitor = nil
         }
         hotKeyButton.highlight(false)
         hotKeyButton.title = SettingsManager.shared.globalHotKeyDisplayString

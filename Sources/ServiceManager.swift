@@ -57,6 +57,7 @@ final class ServiceManager {
     private var statusObservers: [UUID: (ServiceSnapshot) -> Void] = [:]
     private var portObserverToken: UUID?
     private var timer: Timer?
+    private var wakeObserver: NSObjectProtocol?
     private var checkInFlight = false
     private var pendingCheckCompletions: [(Bool) -> Void] = []
     private var consecutiveProbeMisses = 0
@@ -215,11 +216,25 @@ final class ServiceManager {
         }
         timer = monitorTimer
         RunLoop.main.add(monitorTimer, forMode: .common)
+
+        // Timers do not fire while the machine sleeps, so the menu bar can
+        // show a stale phase for however long the lid stayed closed.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.checkStatus()
+        }
     }
 
     func stopMonitoring() {
         timer?.invalidate()
         timer = nil
+        if let observer = wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            wakeObserver = nil
+        }
     }
 
     // MARK: - DSH Installation
@@ -354,6 +369,13 @@ final class ServiceManager {
     }
 
     private func probe(port: Int) -> ProbeResult {
+        // Gate on a bare TCP connect before spending an HTTP round trip and a
+        // forked `lsof`. While the service is stopped — the state this app
+        // spends most of its life in — a refused connect answers the only
+        // question the poll has, for the cost of one syscall instead of a
+        // process spawn per tick.
+        guard isPortListening(port) else { return .unavailable }
+
         guard let url = URL(string: "http://127.0.0.1:\(port)") else {
             return .unavailable
         }
@@ -473,6 +495,25 @@ final class ServiceManager {
                 handleUnexpectedExit(pid: lostPID, port: port)
             }
         }
+    }
+
+    /// One `connect()` answers "is anybody listening here?" without a fork.
+    private func isPortListening(_ port: Int) -> Bool {
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(UInt16(port).bigEndian)
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+
+        let result = withUnsafePointer(to: &addr) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { generic in
+                Darwin.connect(fd, generic, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        return result == 0
     }
 
     private func listenerPID(on port: Int) -> Int32? {

@@ -37,6 +37,7 @@ final class Localization {
         // Generic
         case ok, cancel, copy, copied, done, close, reset, recheck, restartNow
         case recording, windowTitlePreferences
+        case hotKeyConflictTitle, hotKeyConflict
         case installEllipsis, checkingEllipsis, defaultButton, later
 
         // App identity
@@ -192,6 +193,8 @@ final class Localization {
         .copied: "Copied!",
         .recording: "Recording…",
         .windowTitlePreferences: "Preferences",
+        .hotKeyConflictTitle: "Shortcut already taken",
+        .hotKeyConflict: "{keys} is already used by another app, so it was not saved. Pick a different combination. (system code {code})",
         .done: "Done",
         .close: "Close",
         .reset: "Reset",
@@ -396,6 +399,8 @@ final class Localization {
         .copied: "已复制！",
         .recording: "录制中…",
         .windowTitlePreferences: "偏好设置",
+        .hotKeyConflictTitle: "快捷键已被占用",
+        .hotKeyConflict: "{keys} 已被其他应用占用，因此没有保存。请换一个组合。（系统代码 {code}）",
         .done: "完成",
         .close: "关闭",
         .reset: "恢复默认",

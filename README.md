@@ -1,7 +1,7 @@
-# DSH Bar (macOS) 🐳
+# DeepSeek Harness Bar (macOS) 🐳
 
 <p align="center">
-  <img src="Resources/icon.png" width="128" height="128" alt="DSH Bar Icon">
+  <img src="Resources/icon.png" width="128" height="128" alt="DeepSeek Harness Bar Icon">
 </p>
 
 <p align="center">
@@ -11,7 +11,7 @@
 
 ---
 
-## 💡 为什么用 DSH Bar？ / Why DSH Bar?
+## 💡 为什么用它？ / Why DeepSeek Harness Bar?
 
 如果你平时用 `dsh web` 启动 DeepSeek Harness，那么“服务在不在跑”“怎么停掉后台进程”“换端口后怎么重启”这些事，通常都得回到终端敲 `lsof`、`kill`。DSH Bar 把这些操作放进菜单栏，随手一点即可。
 
@@ -40,24 +40,19 @@ npm install -g @deepseek-ai/dsh
 
 本项目没有使用 Apple Developer Program 的签名与公证证书，所以从 GitHub 下载后，macOS 的 Gatekeeper 可能提示：
 
-> **“DSH Bar 已损坏，无法打开。你应该将它移到废纸篓”** 或 **“无法打开，因为无法验证开发者”**
+> **“DeepSeek Harness Bar 已损坏，无法打开。你应该将它移到废纸篓”** 或 **“无法打开，因为无法验证开发者”**
 
 **解决方法**：在终端里解除隔离属性。
 
 ```bash
-sudo xattr -rd com.apple.quarantine "/Applications/DSH Bar.app"
-```
-*（输入密码时不会显示字符，输完密码直接回车即可）*
-
-或者：
-
-```bash
-xattr -cr "/Applications/DSH Bar.app"
+xattr -cr "/Applications/DeepSeek Harness Bar.app"
 ```
 
-执行后即可正常启动。
+执行后即可正常启动。若提示权限不足，再在命令前加上 `sudo`。
 
-> 💡 **图形界面方法**：打开「系统设置」→「隐私与安全性」，滑到底部会看到“已阻止使用 DSH Bar”，点击 **“仍要打开”**。
+> ⚠️ **从旧版升级请先删除**：0.1.0 起应用改名为 **DeepSeek Harness Bar**。旧版 `DSH Bar.app` 与新版共用同一个 bundle identifier，两者同时存在时 macOS 可能打开错的那个——请先删掉旧版再安装。
+
+> 💡 **图形界面方法**：打开「系统设置」→「隐私与安全性」，滑到底部会看到"已阻止使用 DeepSeek Harness Bar"，点击 **"仍要打开"**。
 
 ---
 
@@ -130,8 +125,8 @@ xattr -cr "/Applications/DSH Bar.app"
 发布前可在本地复现同样的产物：
 
 ```bash
-VERSION=0.0.2 ./build.sh          # 通用二进制 + ad-hoc 签名
-VERSION=0.0.2 SIGNING_IDENTITY="Developer ID Application: …" ./build.sh
+VERSION=0.1.0 ./build.sh          # 通用二进制 + ad-hoc 签名
+VERSION=0.1.0 SIGNING_IDENTITY="Developer ID Application: …" ./build.sh
 ```
 
 ### 方式二：从源码编译并安装
@@ -140,15 +135,25 @@ VERSION=0.0.2 SIGNING_IDENTITY="Developer ID Application: …" ./build.sh
 git clone https://github.com/donald-trump86/dsh-bar-macos.git
 cd dsh-bar-macos
 make install
-open -a "DSH Bar"
+open -a "DeepSeek Harness Bar"
 ```
 
 ### 方式三：只编译，不安装
 
 ```bash
 make
-open "build/DSH Bar.app"
+open "build/DeepSeek Harness Bar.app"
 ```
+
+---
+
+## ✅ 提交前自查 / Before You Commit
+
+```bash
+make check
+```
+
+校验中英文案 key 是否一一对应、`build.sh` 的应用名与 `Info.plist` 是否一致、README 里的路径是否还能用。CI 也会跑同一份脚本。
 
 ---
 

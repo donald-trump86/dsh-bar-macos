@@ -114,7 +114,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APP="build/DSH Bar.app"
+          APP="build/DeepSeek Harness Bar.app"
           BIN="$APP/Contents/MacOS/dsh-bar"
 
           test -d "$APP"
@@ -151,14 +151,14 @@ jobs:
             --password "$APPLE_APP_PASSWORD" \
             --wait
 
-          xcrun stapler staple "build/DSH Bar.app"
-          xcrun stapler validate "build/DSH Bar.app"
-          spctl --assess --type execute --verbose=4 "build/DSH Bar.app"
+          xcrun stapler staple "build/DeepSeek Harness Bar.app"
+          xcrun stapler validate "build/DeepSeek Harness Bar.app"
+          spctl --assess --type execute --verbose=4 "build/DeepSeek Harness Bar.app"
 
           # Re-package so the shipped archive contains the stapled ticket.
           rm -f "dist/$ZIP_NAME" "dist/$ZIP_NAME.sha256"
           ditto -c -k --keepParent --norsrc --noextattr --noqtn --noacl \
-            "build/DSH Bar.app" "dist/$ZIP_NAME"
+            "build/DeepSeek Harness Bar.app" "dist/$ZIP_NAME"
           (cd dist && shasum -a 256 "$ZIP_NAME" > "$ZIP_NAME.sha256")
 
       - name: Write release notes
@@ -175,14 +175,17 @@ jobs:
           {
             printf '### Installation\n\n'
             printf '1. Download and unzip `%s`.\n' "$ZIP_NAME"
-            printf '2. Move **DSH Bar.app** into `/Applications` and open it.\n'
-            printf '3. Verify the download against `%s.sha256`.\n\n' "$ZIP_NAME"
+            printf '2. Delete any older **DSH Bar.app** first. It shares this app\x27s bundle identifier, and leaving both installed makes macOS open the wrong one.\n'
+            printf '3. Move **DeepSeek Harness Bar.app** into `/Applications` and open it.\n'
+            printf '4. Verify the download against `%s.sha256`.\n\n' "$ZIP_NAME"
             if [[ "$SIGNED" == "true" ]]; then
               printf 'This build is signed with a Developer ID certificate and notarized by Apple.\n'
             else
               printf '> **This build is not notarized.** macOS may report it as damaged after download.\n'
               printf '> Clear the quarantine attribute first:\n\n'
-              printf '```bash\nxattr -cr "/Applications/DSH Bar.app"\n```\n'
+              printf '```bash\nxattr -cr "/Applications/DeepSeek Harness Bar.app"\n```\n'
+              printf '>\n'
+              printf '> Add `sudo` in front only if you get a permission error.\n'
             fi
           } > "$NOTES"
           cat "$NOTES"
@@ -216,7 +219,7 @@ jobs:
             gh release create "$TAG" \
               "dist/$ZIP_NAME" "dist/$ZIP_NAME.sha256" \
               --verify-tag \
-              --title "DSH Bar $TAG" \
+              --title "DeepSeek Harness Bar $TAG" \
               --notes-file dist/release-notes.md \
               "${prerelease_args[@]}"
           fi
