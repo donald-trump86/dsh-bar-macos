@@ -95,8 +95,16 @@ check_pair Sources/ServiceManager.swift wakeObserver "wakeObserver = NSWorkspace
 check_pair Sources/DashboardWindow.swift localEventMonitor "addLocalMonitorForEvents" "removeMonitor(monitor)"
 check_pair Sources/DashboardWindow.swift globalEventMonitor "addGlobalMonitorForEvents" "removeMonitor(monitor)"
 
-# 6. The gate test extracts the real function from the source, so the two
-#    cannot drift. What it cannot catch is a wrong answer on a path loopback
-#    never takes — see the note at the end of probe-gate-check.sh.
+# 6. The panel's rows are pinned with fixed heights, so the window's minimum
+#    size must be the height they add up to. A smaller floor does not shrink
+#    the panel — it lets rows be positioned outside the visible area, which is
+#    what made 0.1.1 look overlapped when dragged.
+if grep -q "minSize = NSSize(width: 540, height: Self.naturalContentHeight)" Sources/DashboardWindow.swift \
+   && grep -q "private static let naturalContentHeight: CGFloat = 538" Sources/DashboardWindow.swift \
+   && grep -q "preferencesScroll.documentView = preferencesCard" Sources/DashboardWindow.swift; then
+    pass "panel minimum size is derived from its fixed-height rows"
+else
+    fail "panel minSize is not tied to naturalContentHeight (rows will clip)"
+fi
 
 exit $FAILED

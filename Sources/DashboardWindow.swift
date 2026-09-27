@@ -21,6 +21,13 @@ private final class DashboardPanelWindow: NSWindow {
 
 final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     static let shared = DashboardWindowController()
+
+    /// The header, service card and footer are pinned at fixed heights, so they
+    /// set the floor: 34 top + 72 header + 14 + 160 service + 14 + scroll +
+    /// 14 + 32 footer + 18 bottom. The preferences card is inside a scroll view
+    /// and no longer contributes its full 432pt to that sum — that is what
+    /// lets the panel be dragged shorter than its natural height.
+    private static let naturalContentHeight: CGFloat = 538
     
     // Status Badge UI
     private let statusBadge = NSBox()
@@ -80,10 +87,10 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         window.level = .floating
         window.backgroundColor = .clear
         // AppKit restores the size across launches on its own, so nothing here
-        // needs to persist it. The floor keeps the fixed-width rows and the
-        // footer from overlapping; the ceiling is a formality against an
-        // absurdly stretched panel.
-        window.minSize = NSSize(width: 540, height: 560)
+        // needs to persist it. The floor is the height of the fixed-height rows
+        // in setupUI; below it those rows would be pushed outside the window.
+        // The preferences list scrolls, so it does not raise the floor.
+        window.minSize = NSSize(width: 540, height: Self.naturalContentHeight)
         window.maxSize = NSSize(width: 900, height: 1200)
 
         super.init(window: window)
@@ -179,10 +186,32 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         let serviceCard = makeServiceCard()
         let preferencesCard = makePreferencesCard()
         let footer = makeFooterView()
-        [header, serviceCard, preferencesCard, footer].forEach {
+        [header, serviceCard, footer].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             visualEffect.addSubview($0)
         }
+
+        // The preferences rows are a fixed 432pt stack, taller than the
+        // smallest panel worth showing. Scrolling them is what lets the window
+        // shrink below that height instead of clipping rows off the top.
+        let preferencesScroll = NSScrollView()
+        preferencesScroll.hasVerticalScroller = true
+        preferencesScroll.drawsBackground = false
+        preferencesScroll.translatesAutoresizingMaskIntoConstraints = false
+        visualEffect.addSubview(preferencesScroll)
+        // A scroll view manages its document view's frame itself, so the card
+        // has to be Auto Layout-driven or the constraints below do nothing.
+        preferencesCard.translatesAutoresizingMaskIntoConstraints = false
+        preferencesScroll.documentView = preferencesCard
+
+        // Natural height wins when the panel is short (the card scrolls). This
+        // one is only allowed to break when the panel is tall, so the card
+        // stretches to fill instead of leaving a gap above the footer.
+        let cardFillsClip = preferencesCard.heightAnchor
+            .constraint(greaterThanOrEqualTo: preferencesScroll.contentView.heightAnchor)
+        let cardIsNaturalHeight = preferencesCard.heightAnchor
+            .constraint(equalToConstant: 432)
+        cardIsNaturalHeight.priority = .defaultHigh
 
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: visualEffect.topAnchor, constant: 34),
@@ -195,10 +224,18 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             serviceCard.trailingAnchor.constraint(equalTo: header.trailingAnchor),
             serviceCard.heightAnchor.constraint(equalToConstant: 160),
 
-            preferencesCard.topAnchor.constraint(equalTo: serviceCard.bottomAnchor, constant: 14),
-            preferencesCard.leadingAnchor.constraint(equalTo: header.leadingAnchor),
-            preferencesCard.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-            preferencesCard.heightAnchor.constraint(equalToConstant: 432),
+            preferencesScroll.topAnchor.constraint(equalTo: serviceCard.bottomAnchor, constant: 14),
+            preferencesScroll.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+            preferencesScroll.trailingAnchor.constraint(equalTo: header.trailingAnchor),
+            preferencesScroll.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -14),
+            // Shortest slice of the preferences list still worth showing.
+            preferencesScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 180),
+
+            preferencesCard.topAnchor.constraint(equalTo: preferencesScroll.contentView.topAnchor),
+            preferencesCard.leadingAnchor.constraint(equalTo: preferencesScroll.contentView.leadingAnchor),
+            preferencesCard.widthAnchor.constraint(equalTo: preferencesScroll.contentView.widthAnchor),
+            cardFillsClip,
+            cardIsNaturalHeight,
 
             footer.leadingAnchor.constraint(equalTo: header.leadingAnchor),
             footer.trailingAnchor.constraint(equalTo: header.trailingAnchor),
