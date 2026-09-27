@@ -219,7 +219,7 @@ final class ServiceManager {
 
         // Timers do not fire while the machine sleeps, so the menu bar can
         // show a stale phase for however long the lid stayed closed.
-        NSWorkspace.shared.notificationCenter.addObserver(
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
             object: nil,
             queue: .main
@@ -231,6 +231,8 @@ final class ServiceManager {
     func stopMonitoring() {
         timer?.invalidate()
         timer = nil
+        // A repeat call to startMonitoring would otherwise stack up observers
+        // that nothing can remove, since only the newest one is kept.
         if let observer = wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
             wakeObserver = nil
@@ -508,13 +510,41 @@ final class ServiceManager {
         guard fd >= 0 else { return false }
         defer { close(fd) }
 
+        // A blocking connect has no timeout on Darwin, and this probe gates the
+        // whole poll — one silent drop would hang the check that owns
+        // `checkInFlight` and freeze the menu bar at its last phase. Poll a
+        // non-blocking socket instead so a dropped packet costs 200ms, not a
+        // hang. Localhost answers in microseconds, so this only ever cuts off
+        // the pathological case.
+        let flags = fcntl(fd, F_GETFL, 0)
+        _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+
         let result = withUnsafePointer(to: &addr) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { generic in
                 Darwin.connect(fd, generic, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
-        return result == 0
+        if result == 0 { return true }
+        // Anything other than "still in progress" is a real refusal.
+        guard result == -1, errno == EINPROGRESS else { return false }
+
+        var descriptor = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+        let ready = withUnsafeMutablePointer(to: &descriptor) { pointer in
+            poll(pointer, 1, Self.portProbeTimeoutMilliseconds)
+        }
+        guard ready > 0 else { return false }
+
+        // POLLOUT only means the handshake finished; SO_ERROR carries the
+        // verdict, and it is read exactly once because connect consumes it.
+        var pendingError: Int32 = 0
+        var length = socklen_t(MemoryLayout<Int32>.size)
+        let checked = withUnsafeMutablePointer(to: &pendingError) { pointer in
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, pointer, &length)
+        }
+        return checked == 0 && pendingError == 0
     }
+
+    private static let portProbeTimeoutMilliseconds: Int32 = 200
 
     private func listenerPID(on port: Int) -> Int32? {
         let process = Process()
@@ -1691,6 +1721,65 @@ final class ServiceManager {
     func copyURLToClipboard() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(baseUrl.absoluteString, forType: .string)
+    }
+
+    /// A paste-ready bug report: what this machine is running, what state the
+    /// service is in, and whether the hot key is actually live. It is assembled
+    /// from fields the snapshot already holds, then passed through the same
+    /// token redactor the log window uses, so a captured URL can never leak the
+    /// process token into a public issue.
+    var diagnosticsSummary: String {
+        let settings = SettingsManager.shared
+        let status = HotKeyManager.shared.lastRegistrationStatus
+        let hotKey = "\(settings.globalHotKeyDisplayString) (\(settings.globalHotKeyModifiers), \(settings.globalHotKeyKeyCode))"
+        let hotKeyState = status.map { "FAILED (OSStatus \($0) — already owned by another app)" } ?? "registered"
+
+        var lines = [
+            "DeepSeek Harness Bar \(Self.applicationVersion)",
+            "macOS \(ProcessInfo.processInfo.operatingSystemVersionString)",
+            "Arch: \(Self.currentArchitecture)",
+            "",
+            "Service:",
+            "  phase: \(snapshot.phase.rawValue)",
+            "  port: \(snapshot.port)",
+            "  managed by app: \(snapshot.isManaged)",
+            "  pid: \(snapshot.pid.map(String.init) ?? "none")",
+            "  uptime: \(snapshot.uptime.map { "\(Int($0))s" } ?? "n/a")",
+            "  message: \(snapshot.message ?? "none")",
+            "",
+            "DSH CLI:",
+            "  path: \(snapshot.dshPath ?? "not found")",
+            "  version: \(snapshot.dshVersion ?? "unknown")",
+            "",
+            "Global hot key:",
+            "  \(hotKey)",
+            "  state: \(hotKeyState)",
+            "",
+            "Notifications: \(ServiceNotifier.shared.availability.shortDescription)",
+            "Language: \(settings.language.rawValue)"
+        ]
+        return Self.redactingProcessTokens(in: lines.joined(separator: "\n"))
+    }
+
+    func copyDiagnosticsToClipboard() {
+        let summary = diagnosticsSummary
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(summary, forType: .string)
+    }
+
+    static var applicationVersion: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "0"
+        let build = info?["CFBundleVersion"] as? String ?? version
+        return "\(version) (\(build))"
+    }
+
+    private static var currentArchitecture: String {
+        #if arch(arm64)
+        return "arm64"
+        #else
+        return "x86_64"
+        #endif
     }
 }
 

@@ -7,7 +7,8 @@
 
 set -uo pipefail
 
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/.."
 FAILED=0
 
 fail() { echo "FAIL  $1"; FAILED=1; }
@@ -24,14 +25,17 @@ else
     fail "build.sh APP_NAME='$APP_NAME' but Info.plist CFBundleName='$PLIST_NAME'"
 fi
 
-# 2. Every path the README tells a user to run must still exist or resolve.
+# 2. Every .app path in the README must be named after the real app. Comparing
+#    against APP_NAME is the point: accepting any `*.app` string (as an earlier
+#    version of this script did) meant a stale name sailed through the check it
+#    was written to catch.
 while IFS= read -r path; do
-    if [[ -e "$path" || "$path" == *".app" || "$path" == /Applications/* ]]; then
+    if [[ "$path" == *"$APP_NAME.app" ]]; then
         pass "README path: $path"
     else
-        fail "README references a path that does not exist: $path"
+        fail "README references '$path', but the app is named '$APP_NAME.app'"
     fi
-done < <(grep -oE '"/Applications/[^"]+\.app"|"build/[^"]+\.app"' README.md | tr -d '"' | sort -u)
+done < <(grep -oE '"[^"]+\.app"' README.md | tr -d '"' | sort -u)
 
 # 3. Translation keys must exist in both tables. A key added to one language
 #    only falls back to English silently.
@@ -65,5 +69,34 @@ PY
 else
     echo "SKIP  translation key alignment (python3 not found)"
 fi
+
+# 4. The polling gate is the app's whole idle path: one wrong answer shows the
+#    menu bar as running when it is not, or vice versa. It is a branch over a
+#    syscall, so it gets a real check against real sockets.
+if "$SCRIPT_DIR/probe-gate-check.sh" >/dev/null 2>&1; then
+    pass "port probe gate answers correctly for closed, listening and dropped ports"
+else
+    fail "port probe gate check failed — run $SCRIPT_DIR/probe-gate-check.sh to see why"
+fi
+
+# 5. An NSEvent monitor that is installed but never removed leaks a closure
+#    that holds its owner alive. Each of these three is installed in one place
+#    and must be released in another, and the app still runs if a half is
+#    deleted — so the pairing is asserted by name rather than by counting.
+check_pair() {
+    local file="$1" token="$2" install="$3" remove="$4"
+    if grep -q "$install" "$file" && grep -q "$remove" "$file"; then
+        pass "$file: $token is installed and released"
+    else
+        fail "$file: $token has an install or a removal but not both"
+    fi
+}
+check_pair Sources/ServiceManager.swift wakeObserver "wakeObserver = NSWorkspace" "removeObserver(observer)"
+check_pair Sources/DashboardWindow.swift localEventMonitor "addLocalMonitorForEvents" "removeMonitor(monitor)"
+check_pair Sources/DashboardWindow.swift globalEventMonitor "addGlobalMonitorForEvents" "removeMonitor(monitor)"
+
+# 6. The gate test extracts the real function from the source, so the two
+#    cannot drift. What it cannot catch is a wrong answer on a path loopback
+#    never takes — see the note at the end of probe-gate-check.sh.
 
 exit $FAILED

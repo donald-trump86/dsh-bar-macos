@@ -36,6 +36,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     private let toggleButton = NSButton()
     private let restartButton = NSButton()
     private let logsButton = NSButton()
+    private let diagnosticsButton = NSButton()
     private let serviceDetailsLabel = NSTextField(labelWithString: L(.checkingServiceDetails))
     
     // Preferences UI
@@ -65,7 +66,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     init() {
         let window = DashboardPanelWindow(
             contentRect: NSRect(x: 0, y: 0, width: 540, height: 792),
-            styleMask: [.titled, .closable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -78,7 +79,13 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         // the normal level so it no longer covers whatever the user switches to.
         window.level = .floating
         window.backgroundColor = .clear
-        
+        // AppKit restores the size across launches on its own, so nothing here
+        // needs to persist it. The floor keeps the fixed-width rows and the
+        // footer from overlapping; the ceiling is a formality against an
+        // absurdly stretched panel.
+        window.minSize = NSSize(width: 540, height: 560)
+        window.maxSize = NSSize(width: 900, height: 1200)
+
         super.init(window: window)
 
         window.onCommandW = { [weak self] in
@@ -146,6 +153,10 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         // Always reflect the latest state when the panel is brought up.
         updateState(ServiceManager.shared.snapshot)
         updateNotificationRow()
+        // Registration can have failed while the panel was closed, e.g. another
+        // app took the shortcut in the meantime.
+        hotKeyButton.title = SettingsManager.shared.globalHotKeyDisplayString
+        updateHotKeyAppearance()
         autoRestartCheckbox.state = SettingsManager.shared.autoRestartEnabled ? .on : .off
         ServiceManager.shared.detectDshInstallation()
         // Re-float explicitly: the panel may have been dropped to the normal
@@ -395,6 +406,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         hotKeyButton.target = self
         hotKeyButton.action = #selector(didClickRecordHotKey)
         hotKeyButton.translatesAutoresizingMaskIntoConstraints = false
+        updateHotKeyAppearance()
 
         hotKeyResetButton.title = L(.reset)
         hotKeyResetButton.bezelStyle = .rounded
@@ -666,6 +678,14 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         logsButton.translatesAutoresizingMaskIntoConstraints = false
         footer.addSubview(logsButton)
 
+        diagnosticsButton.title = L(.copyDiagnostics)
+        diagnosticsButton.bezelStyle = .accessoryBarAction
+        diagnosticsButton.target = self
+        diagnosticsButton.action = #selector(didClickCopyDiagnostics)
+        diagnosticsButton.setAccessibilityLabel(L(.copyDiagnostics))
+        diagnosticsButton.translatesAutoresizingMaskIntoConstraints = false
+        footer.addSubview(diagnosticsButton)
+
         let closeButton = NSButton(title: L(.done), target: self, action: #selector(didClickClose))
         closeButton.bezelStyle = .accessoryBarAction
         closeButton.keyEquivalent = "\u{1b}"
@@ -677,6 +697,11 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             logsButton.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
             logsButton.widthAnchor.constraint(equalToConstant: 120),
             logsButton.heightAnchor.constraint(equalToConstant: 30),
+
+            diagnosticsButton.leadingAnchor.constraint(equalTo: logsButton.trailingAnchor, constant: 10),
+            diagnosticsButton.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
+            diagnosticsButton.widthAnchor.constraint(equalToConstant: 132),
+            diagnosticsButton.heightAnchor.constraint(equalToConstant: 30),
 
             closeButton.trailingAnchor.constraint(equalTo: footer.trailingAnchor),
             closeButton.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
@@ -964,6 +989,31 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             self?.copyButton.isEnabled = true
         }
     }
+
+    /// A hot key that failed to register is the one failure a user can act on,
+    /// so the row that shows it has to look wrong — not just behave wrong.
+    private func updateHotKeyAppearance() {
+        let failed = HotKeyManager.shared.lastRegistrationStatus != nil
+        hotKeyButton.contentTintColor = failed ? .systemRed : .labelColor
+        if failed {
+            hotKeyButton.toolTip = L(.hotKeyConflict, [
+                "keys": SettingsManager.shared.globalHotKeyDisplayString,
+                "code": HotKeyManager.shared.lastRegistrationStatus.map { "\($0)" } ?? ""
+            ])
+        } else {
+            hotKeyButton.toolTip = nil
+        }
+    }
+
+    @objc private func didClickCopyDiagnostics() {
+        ServiceManager.shared.copyDiagnosticsToClipboard()
+        let original = L(.copyDiagnostics)
+        diagnosticsButton.title = L(.copied)
+        copyFeedbackTimer?.invalidate()
+        copyFeedbackTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
+            self?.diagnosticsButton.title = original
+        }
+    }
     
     // MARK: - Port Actions
     private func applyCurrentPort() {
@@ -1172,6 +1222,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         }
         SettingsManager.shared.resetHotKeyToDefault()
         hotKeyButton.title = SettingsManager.shared.globalHotKeyDisplayString
+        updateHotKeyAppearance()
     }
     
     private static func formatDuration(_ interval: TimeInterval) -> String {
