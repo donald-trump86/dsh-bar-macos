@@ -26,6 +26,14 @@ fi
 
 read -r -a ARCH_LIST <<< "$ARCHS_VALUE"
 SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
+
+# Keep the module cache inside the repo. Left unset, clang writes it to a
+# per-user directory under /var/folders, which is not writable in a sandboxed
+# or containerized checkout — the build then fails with 'Operation not
+# permitted' on the first .pcm rather than on anything to do with the sources.
+# CI sets this explicitly to a runner temp dir; both are honored.
+export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$PWD/build/.modulecache}"
+mkdir -p "$CLANG_MODULE_CACHE_PATH"
 SOURCE_FILES=(
     Sources/main.swift
     Sources/AppDelegate.swift
