@@ -317,7 +317,7 @@ final class ServiceManager {
         return output?.split(separator: "\n").first.map(String.init)
     }
 
-    private static func commandEnvironment() -> [String: String] {
+    static func commandEnvironment() -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         let home = NSHomeDirectory()
         let preferredPaths = [

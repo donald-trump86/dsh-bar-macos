@@ -107,4 +107,16 @@ else
     fail "panel minSize is not tied to naturalContentHeight (rows will clip)"
 fi
 
+# 7. The version controller runs npm and probes the registry from its own file,
+#    so it needs the same PATH the binary lookup uses. `private` in Swift is
+#    file-scoped, so a controller in another file cannot call it at all — the
+#    compiler catches that, but a silent copy of the PATH list does not compile
+#    differently. Assert the shared definition is the one that exists.
+if grep -q "^    static func commandEnvironment() -> \[String: String\] {" Sources/ServiceManager.swift \
+   && grep -rq "ServiceManager.commandEnvironment()" Sources/DshVersionController.swift; then
+    pass "npm children inherit ServiceManager.commandEnvironment"
+else
+    fail "DshVersionController must call ServiceManager.commandEnvironment(), not re-derive PATH"
+fi
+
 exit $FAILED
