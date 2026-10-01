@@ -468,6 +468,8 @@ scope; the controller class is the only stateful part."
 
 ### Task 3: The preference, the strings, and the row's rendering logic
 
+**STATUS: complete, landed as `d27237f`.** Every step below ran. Steps 1, 2 and 5 differ from the plan text — read the notes on each step and use the committed source, not the code blocks here. Step 3's truth table was rewritten (5 of the planned 9 assertions survived mutation because two cases passed identical arguments), and Step 6 wired check 8 exactly as written.
+
 **Files:**
 - Modify: `Sources/SettingsManager.swift` (new key constant + `preferredDshTag`)
 - Modify: `Sources/Localization.swift:72` (enum), `:285` (english), `:492` (chinese)
@@ -497,6 +499,8 @@ scope; the controller class is the only stateful part."
 **Why a pure function:** the decision "what does this row say and which button is live" is the part that can be wrong without anything visibly crashing. A dropdown that is enabled with no tag selected, or a button live while a probe failed, are both silent. Extracting it makes the truth table testable with no window and no AppKit — the same move `Tests/probe-gate-check.sh` made for `isPortListening`.
 
 - [ ] **Step 1: Add the preference**
+
+As committed: `SettingsManager` has no `defaults` property, so both accessors use `UserDefaults.standard` directly (the plan's stated fallback). The constant sits with the other keys and the property under a `// MARK: - Install channel` section after the `autoRestartEnabled` block. The validation is `DshVersionController.validTag(_:)` on **both** accessors — an invalid or upstream-deleted tag reads back as `nil`, and writing one removes the key rather than storing it.
 
 In `Sources/SettingsManager.swift`, add the key constant beside the others at `:12`:
 
@@ -602,8 +606,7 @@ if ! grep -q "func tagRowPresentation" "$REPO/Sources/DashboardWindow.swift"; th
     echo "tagRowPresentation not found in $REPO/Sources/DashboardWindow.swift" >&2
     exit 1
 fi
-sed -n '/func tagRowPresentation/,/^    }$/p' "$REPO/Sources/DashboardWindow.swift" \
-    | sed -e 's/^    //' > "$CACHE/render.swift"
+sed -n '/^func tagRowPresentation/,/^}$/p' "$REPO/Sources/DashboardWindow.swift" > "$CACHE/render.swift"
 
 # `tagRowPresentation` takes a ProbeState, calls its `options()`, reads the stored
 # preference, reads `DshVersionController.shared.isInstalling`, and renders
@@ -738,7 +741,15 @@ Expected: FAIL with `tagRowPresentation not found in Sources/DashboardWindow.swi
 
 - [ ] **Step 5: Implement `tagRowPresentation`**
 
-Add to `Sources/DashboardWindow.swift`, immediately above `private func updateState(_ snapshot: ServiceSnapshot)` at `:825`, together with the presentation struct at file scope (near `DashboardPanelWindow`):
+**This step is superseded by what is already committed.** `d27237f` landed a working `tagRowPresentation`, and the truth table in Step 3 was rewritten at the same time. The body below is the ORIGINAL plan, kept only so the diffs are visible. Three of them are deliberate improvements, not regressions:
+
+1. The `switch state` with three early returns became straight-line code ending in one `TagRowPresentation(…)`, because the three arms disagreed with each other — `.failed` and `.loaded` returned different `popupTitle` shapes for the same input, and the `.failed` arm never consulted `pendingRestart`.
+2. **The `description` gained `state.failure?.message ?? restingDescription`.** As written below, the `.failed` arm was the only place a reason surfaced, and the plan's own truth table calls `tagRowPresentation` once per state, so the reason was reachable — but the description was assembled in three separate places and could drift. The committed shape computes it once.
+3. The button title went from a constant `L(.installEllipsis)` to `state.isLoading ? L(.checkingEllipsis) : L(.installEllipsis)`.
+
+Do not restore this block. Read `Sources/DashboardWindow.swift` for the real body, and note that it lives at **file scope** (a leading `func`, not `    func`) — which is why Step 3's extraction is `/^func tagRowPresentation/,/^}$/p` with no de-indent.
+
+The original, for the record:
 
 ```swift
 /// What the install-channel row should display. Separated from the views so the
@@ -827,11 +838,14 @@ func tagRowPresentation(
 }
 ```
 
-Three things pinned in that body:
+Four things pinned in that body:
 
 - The popup title is built by **substituting into the localized template**, matching `Localization.string` at `Sources/Localization.swift:178-185`, so the `(installed)` marker is translatable rather than a hardcoded `String(format:)`.
 - `installButtonEnabled` uses `hasOtherChannel` — a tag exists that is *not* the installed one — **not** "the selected tag differs". Threading the selection in here would need a `selectedTag:` parameter and would put popup state in a function that is supposed to be a pure test of it; Task 4 re-evaluates on every selection change, and when exactly one other channel exists (the common case) the two readings agree. When several exist, the button is enabled for all of them — which is correct, since installing any channel other than the current one is a real change.
 - `L(.portChangedAppliesLater)` is reused deliberately rather than adding a near-duplicate key: `Tests/run-checks.sh:42-71` only compares key *sets*, and a second string meaning "applies after a restart" would drift from the first. The version-specific full sentence is `.installConfirmBody`.
+- **The description must be `state.failure?.message ?? restingDescription`.** An earlier draft of this body computed the pending-restart / running / idle wording and never consulted `state.failure`, so a failed probe rendered the generic channel blurb and the user was told nothing about the unreachable network — while `ProbeFailure.message`, added in Task 2 specifically to "drive the row's description label", went unused. The plan's own truth table caught it (`FAIL: probe failure reason is not shown: installChannelDesc`). A failure outranks the pending-restart notice, because a failure is what the user has to act on.
+
+Relatedly, the planned three-arm `switch` for the button title was three branches of one decision — `.failed` and `default` both returned `L(.installEllipsis)` — so it collapses to `state.isLoading ? L(.checkingEllipsis) : L(.installEllipsis)`.
 
 - [ ] **Step 6: Wire the check into `make check`**
 
@@ -854,7 +868,7 @@ Keep check 7 from Task 1 exactly as written. `make check` runs the file top to b
 - [ ] **Step 7: Run the full gate**
 
 Run: `make check`
-Expected: checks 1-6, 7 and 8 pass — that is 10 `ok` lines, because check 5 emits one line per `check_pair` (there are three) rather than one. Check 6 **still passes** — it asserts `naturalContentHeight: CGFloat = 538` and Task 4 has not run yet. It starts failing only once Task 4 changes the height, which is the spec's deliberate tripwire (`docs/superpowers/specs/2026-10-01-dsh-version-tag-selector-design.md:145`). If check 6 fails *now*, something outside this plan changed the height; find it before continuing.
+Expected: checks 1-6, 7 and 8 pass — that is **11** `ok` lines, not ten: check 2 emits one line per README `.app` path (there are two), check 5 emits one per `check_pair` (there are three), and checks 1, 3, 4, 6, 7, 8 emit one each. Check 6 **still passes** — it asserts `naturalContentHeight: CGFloat = 538` and Task 4 has not run yet. It starts failing only once Task 4 changes the height, which is the spec's deliberate tripwire (`docs/superpowers/specs/2026-10-01-dsh-version-tag-selector-design.md:145`). If check 6 fails *now*, something outside this plan changed the height; find it before continuing.
 
 - [ ] **Step 8: Commit**
 
