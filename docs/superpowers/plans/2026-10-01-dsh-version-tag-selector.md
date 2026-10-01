@@ -21,7 +21,7 @@ These hold in every task. Any task step that contradicts one is wrong.
 - **Never auto-install.** The stored tag (`DSH_DshTag`) is read to seed the popup's selection. No code path reads it in order to install.
 - **Store the tag NAME, never a version number.** Tags move; a stored version becomes an invalid menu item tomorrow.
 - **Probe only `https://registry.npmjs.org/-/package/@deepseek-ai/dsh/dist-tags`.** Never the full packument (~200KB). Never `npm view` — this machine's npm cache is root-owned and `npm view` fails `EPERM`.
-- **Every `npm` / `which` child process must inherit `ServiceManager.commandEnvironment()`** so PATH resolution matches `findNpmBinary()`. It is `private static` today; Task 1 widens it to `internal static` (same module, no behaviour change).
+- **Every `npm` / `which` child process must inherit `ServiceManager.commandEnvironment()`** so PATH resolution matches `findNpmBinary()`. It is `private static` today; Task 1 drops just the `private`, leaving bare `static` (which is already `internal` in Swift). Do not write `internal static` — check 7's grep anchors on `^    static func`.
 - **The installed-binary comparison is by TAG, not by version number.** `latest` and `next` currently resolve to the same version, so a version-equality check would wrongly report `next` as already installed. Tag identity is what the user's selection means.
 - **New user-facing strings go in both `english` and `chinese` tables in `Sources/Localization.swift`, in the same commit.** `Tests/run-checks.sh:42-71` fails otherwise.
 - **New source file must be added to `SOURCE_FILES` in `build.sh:37-49`**, or it silently does not compile into the app.
@@ -804,7 +804,7 @@ Keep check 7 from Task 1 exactly as written. `make check` runs the file top to b
 - [ ] **Step 7: Run the full gate**
 
 Run: `make check`
-Expected: checks 1-5, 7 and 8 pass. Check 6 **still passes** — it asserts `naturalContentHeight: CGFloat = 538` and Task 4 has not run yet. It starts failing only once Task 4 changes the height, which is the spec's deliberate tripwire (`docs/superpowers/specs/2026-10-01-dsh-version-tag-selector-design.md:145`). If check 6 fails *now*, something outside this plan changed the height; find it before continuing.
+Expected: checks 1-6, 7 and 8 pass — that is 10 `ok` lines, because check 5 emits one line per `check_pair` (there are three) rather than one. Check 6 **still passes** — it asserts `naturalContentHeight: CGFloat = 538` and Task 4 has not run yet. It starts failing only once Task 4 changes the height, which is the spec's deliberate tripwire (`docs/superpowers/specs/2026-10-01-dsh-version-tag-selector-design.md:145`). If check 6 fails *now*, something outside this plan changed the height; find it before continuing.
 
 - [ ] **Step 8: Commit**
 
