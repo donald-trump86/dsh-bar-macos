@@ -109,19 +109,15 @@ git commit -m "refactor: widen commandEnvironment so the version controller can 
 - Modify: `build.sh:37-49` (`SOURCE_FILES`)
 
 **Interfaces:**
-- Consumes: `ServiceManager.commandEnvironment()` from Task 1.
-- Produces (used by Task 3 and Task 4):
-  - `struct DshVersionController.TagOption: Equatable { let tag: String; let version: String; var isInstalled: Bool }`
-  - `struct DshVersionController.ProbeState` with `static func idle() -> ProbeState`, `static func loading() -> ProbeState`, `static func loaded(tags: [String: String], installedVersion: String?) -> ProbeState`, `static func failed(_ reason: ProbeFailure) -> ProbeState`, plus `var tags: [String: String]`, `var installedVersion: String?`, `var failure: ProbeFailure?`, `var isLoading: Bool`
-  - `enum DshVersionController.ProbeFailure: Equatable { case offline, timedOut, notFound, badResponse }`
-  - `enum DshVersionController` is a namespace — the real work is `final class DshVersionController` with `static let shared = DshVersionController()`. If a type and its extension namespace collide, drop the `enum` and use a nested-free flat design: `struct DshTagOption`, `enum DshTagProbeFailure`, `enum DshTagProbeState` at file scope. **Use whichever compiles; then use it consistently in Tasks 3 and 4.** The flat, non-nested names above (`TagOption`, `ProbeState`, `ProbeFailure`) are the canonical ones referenced elsewhere in this plan.
-  - `static func installCommand(forTag tag: String) -> String?` — returns `nil` when the tag is empty or contains characters outside `a-zA-Z0-9-._`.
-  - `static func validTag(_ tag: String) -> Bool`
-  - `func fetchTags(completion: @escaping (Result<[String: String], ProbeFailure>) -> Void)`
-  - `func install(tag: String, completion: @escaping (Result<String, Error>) -> Void)`
-  - `private(set) var isInstalling: Bool` (main-thread readable; drives the row's busy state)
+- Consumes: `ServiceManager.commandEnvironment()` from Task 1 (non-private since Task 1).
+- Produces, all at **file scope** in `Sources/DshVersionController.swift` (chosen and committed in `3f6b200` — a nested `enum` namespace and a same-named `final class` cannot coexist in Swift, and every downstream reference uses the flat names):
+  - `struct TagOption: Equatable { let tag: String; let version: String; let isInstalled: Bool }`
+  - `enum ProbeFailure: Equatable, Error { case offline, timedOut, notFound, badResponse }` plus `var message: String`. **`Error` is required**, not optional: `fetchTags` hands this out as a `Result` failure.
+  - `enum ProbeState` with the **cases** `idle`, `loading`, `loaded(tags: [String: String], installedVersion: String?)`, `failed(ProbeFailure)` — these are enum cases, not factory functions, and cannot also exist as same-named static funcs. Plus `var tags`, `var installedVersion`, `var failure`, `var isLoading`, `func options() -> [TagOption]`, `var installedTag: String?`.
+  - `enum DshVersionControllerError: LocalizedError` with `invalidTag(String)`, `alreadyInstalling`, `npmNotFound`, `installFailed(exitCode: Int32, output: String)`, `installCouldNotStart(String)`.
+  - `final class DshVersionController` with `static let shared = DshVersionController()`, `static func validTag(_ tag: String) -> Bool`, `static func installCommand(forTag tag: String) -> String?` (returns `nil` when the tag is empty or contains characters outside `a-zA-Z0-9-._`; delegates to `validTag`), `func fetchTags(completion: @escaping (Result<[String: String], ProbeFailure>) -> Void)`, `func install(tag: String, completion: @escaping (Result<String, Error>) -> Void)`, `private(set) var isInstalling: Bool`.
 
-**Note on the naming warning above:** pick ONE shape and write it down in the commit message. Everything downstream is written against `TagOption` / `ProbeState` / `ProbeFailure` / `installCommand(forTag:)` / `validTag(_:)`.
+**Note on the naming decision:** shape (B) — flat file-scope types — was chosen in `3f6b200` and is what the code block below and Tasks 3-4 use. Do not reintroduce the nested-namespace form.
 
 - [ ] **Step 1: Write the failing behavioural test**
 
@@ -608,9 +604,63 @@ if ! grep -q "func tagRowPresentation" "$REPO/Sources/DashboardWindow.swift"; th
 fi
 sed -n '/func tagRowPresentation/,/^    }$/p' "$REPO/Sources/DashboardWindow.swift" \
     | sed -e 's/^    //' > "$CACHE/render.swift"
+
+# `tagRowPresentation` takes a ProbeState, calls its `options()`, reads the stored
+# preference, reads `DshVersionController.shared.isInstalling`, and renders
+# localized strings through `L(…)`. None of that exists in a standalone script,
+# so the value types are EXTRACTED from the real source and only the environment
+# is stubbed. Without this the render truth table cannot compile, and a truth
+# table that does not compile is not a test.
+{
+    sed -n '/^struct TagOption/,/^}$/p'        "$SOURCE"
+    sed -n '/^enum ProbeFailure/,/^}$/p'       "$SOURCE"
+    sed -n '/^enum ProbeState/,/^}$/p'         "$SOURCE"
+    sed -n '/^struct TagRowPresentation/,/^}$/p' "$REPO/Sources/DashboardWindow.swift"
+} > "$CACHE/model.swift"
+
+# The environment the pure function reads but must not own. `isInstalling` is a
+# plain stored property here: the test only needs it to exist and be false.
+cat > "$CACHE/environment.swift" <<'SWIFT'
+final class DshVersionController {
+    static let shared = DshVersionController()
+    var isInstalling = false
+}
+
+final class SettingsManager {
+    static let shared = SettingsManager()
+    var preferredDshTag: String?
+}
+
+// `L(…)` returns the key's own name for every string EXCEPT the three the
+// assertions below pin literal English text for. A shim that returned something
+// else would let those assertions pass against the stub instead of the app.
+enum Localization {
+    enum Key: String {
+        case installChannel, installChannelDesc, tagInstalledSuffix
+        case searchingPath, checkingEllipsis, installEllipsis
+        case installDoneRestartNotice, portChangedAppliesLater
+        case tagProbeOffline, tagProbeTimedOut, tagProbeNotFound, tagProbeBadResponse
+    }
+}
+
+func L(_ key: Localization.Key, _ variables: [String: String] = [:]) -> String {
+    switch key {
+    case .tagProbeOffline:     return "Could not reach the npm registry"
+    case .tagProbeTimedOut:    return "The npm registry did not answer in time"
+    case .tagProbeNotFound:    return "This package is not on the npm registry"
+    case .tagProbeBadResponse: return "The npm registry returned an unexpected response"
+    case .tagInstalledSuffix:  return "{tag} ({version}, installed)"
+    default:                   return key.rawValue
+    }
+}
+SWIFT
 ```
 
-and before the closing heredoc, after the existing asserts:
+Then assemble `main.swift` as `model.swift` + `environment.swift` + `render.swift` + the `expect` helper + the two assertion blocks, in that order, and compile as before.
+
+If `tagRowPresentation` ends up reading anything else from the app, stub that too — a missing symbol is a compile error, and the fix is to stub it honestly, never to edit the implementation to make the test compile.
+
+and before the closing heredoc, after the existing `expect` calls. **Use `expect`, not `assert`** — the script compiles with `swiftc -O`, where `assert` is elided and the whole table would pass unconditionally (see Self-Review 2b):
 
 ```swift
 
@@ -621,17 +671,17 @@ and before the closing heredoc, after the existing asserts:
 let loading = tagRowPresentation(
     state: .loading, installedTag: nil, isRunning: false, pendingRestart: false
 )
-assert(loading.popupEnabled == false, "popup enabled while probing")
-assert(loading.installButtonEnabled == false, "install enabled while probing")
+expect(loading.popupEnabled == false, "popup enabled while probing")
+expect(loading.installButtonEnabled == false, "install enabled while probing")
 
 // A failed probe explains itself and offers nothing to click.
 let failed = tagRowPresentation(
     state: .failed(.offline), installedTag: "latest", isRunning: false, pendingRestart: false
 )
-assert(failed.description == "Could not reach the npm registry",
+expect(failed.description == "Could not reach the npm registry",
        "probe failure reason is not shown: \(failed.description)")
-assert(failed.popupEnabled == false, "popup enabled after a failed probe")
-assert(failed.installButtonEnabled == false, "install enabled after a failed probe")
+expect(failed.popupEnabled == false, "popup enabled after a failed probe")
+expect(failed.installButtonEnabled == false, "install enabled after a failed probe")
 
 // Tags that resolve to the same version are both marked installed and both stay
 // selectable — they are different channels that merely coincide today.
@@ -641,44 +691,44 @@ let twins = ProbeState.loaded(
 )
 let twinOptions = twins.options()
 let installedCount = twinOptions.filter(\.isInstalled).count
-assert(installedCount == 2, "expected latest and next both installed, got \(installedCount)")
+expect(installedCount == 2, "expected latest and next both installed, got \(installedCount)")
 let nextTag = twinOptions.first { $0.tag == "next" }
-assert(nextTag?.isInstalled == true, "next not marked installed despite matching version")
+expect(nextTag?.isInstalled == true, "next not marked installed despite matching version")
 
 // Installed tag selected: nothing to do, so the button is dead.
 let onInstalled = tagRowPresentation(
     state: twins, installedTag: "latest", isRunning: false, pendingRestart: false
 )
-assert(onInstalled.installButtonEnabled == false,
+expect(onInstalled.installButtonEnabled == false,
        "install enabled for the tag already on disk")
-assert(onInstalled.popupTitle.contains("latest"), "selected tag missing from popup title")
+expect(onInstalled.popupTitle.contains("latest"), "selected tag missing from popup title")
 
 // A different tag selected: enabled, and the command is the one shown.
 let onNext = tagRowPresentation(
     state: twins, installedTag: "latest", isRunning: false, pendingRestart: false
 )
-assert(onNext.installButtonEnabled == true, "install disabled for a different tag")
+expect(onNext.installButtonEnabled == true, "install disabled for a different tag")
 
 // Service running does NOT block the install; it only changes the notice.
 let whileRunning = tagRowPresentation(
     state: twins, installedTag: "latest", isRunning: true, pendingRestart: false
 )
-assert(whileRunning.installButtonEnabled == onNext.installButtonEnabled,
+expect(whileRunning.installButtonEnabled == onNext.installButtonEnabled,
        "install enablement changed just because the service is running")
 
 // After a successful install, the notice tells the user what to do next.
 let pending = tagRowPresentation(
     state: twins, installedTag: "next", isRunning: true, pendingRestart: true
 )
-assert(pending.showsRestartNotice, "restart notice missing after a successful install")
+expect(pending.showsRestartNotice, "restart notice missing after a successful install")
 
 // A state the registry can produce: no tags at all.
 let empty = tagRowPresentation(
     state: .loaded(tags: [:], installedVersion: nil), installedTag: nil,
     isRunning: false, pendingRestart: false
 )
-assert(empty.popupTitle.isEmpty, "empty registry produced a bogus popup title")
-assert(empty.installButtonEnabled == false, "install enabled with no tags")
+expect(empty.popupTitle.isEmpty, "empty registry produced a bogus popup title")
+expect(empty.installButtonEnabled == false, "install enabled with no tags")
 ```
 
 - [ ] **Step 4: Run it and watch it fail**
@@ -1184,7 +1234,13 @@ No gaps.
 - Task 3 had two `Step 3`s — the test and its "watch it fail" run. Steps 4-8 were renumbered and every cross-reference repointed.
 - `tagInfoLabel` appeared as a property in Task 4 Step 2 and as a view in `refreshTagRow()`, but the description text lives in the `NSStackView` that `makeTextStack` builds. The property is gone and `applyTagDescription(_:)` reaches the label through that stack; `refreshTagRow` also no longer applies `presentation.popupTitle`, because it re-selects from `options` directly and two places writing the selection is how they drift.
 
-The "**Note on the naming warning:**" block in Task 2 resolves a genuine ambiguity I could not settle from the source alone: a nested `enum` namespace and a `final class` with the same name do not coexist, so the plan tells the implementer to pick one shape and use it consistently, and names the canonical identifiers every later task refers to (`TagOption`, `ProbeState`, `ProbeFailure`, `installCommand(forTag:)`, `validTag(_:)`). That is a decision, not a gap.
+The "**Note on the naming decision:**" block in Task 2 no longer leaves a choice open: shape (B), flat file-scope types, was chosen and committed in `3f6b200`, so Tasks 3-4 compile against one shape rather than two.
+
+**2b. The test harness was wrong, not just the plan.** Task 2's check was specified with `assert()` compiled at `-O`. On this toolchain `assert(1 == 2)` exits 0 under `-O` and traps under `-Onone` (verified directly). The plan's test therefore **could not fail**: three mutations — loosening the allowlist to `^[^ ]+$`, dropping `@\(tag)` from the command, replacing the allowlist guard with `!tag.isEmpty` — all printed `PASS`. The committed `Tests/tag-probe-check.sh` uses an always-on `expect(_:_:)` helper instead, keeping the plan's assertion expressions and failure strings verbatim; the same three mutations now fail (`FAIL: hostile tag accepted: "@next"`, `FAIL: latest produced the wrong command`) and the restored source passes. **Task 3 must use `expect`, not `assert`,** in the render truth table.
+
+**2c. Two compile defects in Task 2's own code blocks.** `static func` is illegal at top level in `main.swift`, so the extracted members are wrapped in a namespace type and forwarded under their file-scope names; and `validTag` must be extracted alongside `installCommand`, since the latter calls it. Both are handled in the committed script.
+
+**2d. Pre-existing defect found outside this feature's scope.** `Tests/probe-gate-check.sh` — the precedent every check here follows — builds with `swiftc -O` and asserts with `assert()`, so it is currently **vacuous**: its sockets and timing run, but no assertion is ever evaluated. This predates the tag selector and is not touched by Tasks 1-4. It is worth a follow-up, because a passing `probe-gate-check` line in `make check` currently means nothing.
 
 **3. Type consistency.** `tagRowPresentation(state:installedTag:isRunning:pendingRestart:)` is written identically in Task 3 Step 3's test, Task 3 Step 5's implementation, and Task 4 Step 5's call site. `TagOption` / `ProbeState` / `ProbeFailure` / `installCommand(forTag:)` / `validTag(_:)` are defined in Task 2 and used under those names in Tasks 3 and 4. `DshVersionControllerError.installFailed(exitCode:output:)` is constructed with two labels and matched with `let exitCode, let output`.
 
