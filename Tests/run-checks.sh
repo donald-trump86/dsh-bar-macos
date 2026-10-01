@@ -95,12 +95,16 @@ check_pair Sources/ServiceManager.swift wakeObserver "wakeObserver = NSWorkspace
 check_pair Sources/DashboardWindow.swift localEventMonitor "addLocalMonitorForEvents" "removeMonitor(monitor)"
 check_pair Sources/DashboardWindow.swift globalEventMonitor "addGlobalMonitorForEvents" "removeMonitor(monitor)"
 
-# 6. The panel's rows are pinned with fixed heights, so the window's minimum
-#    size must be the height they add up to. A smaller floor does not shrink
-#    the panel — it lets rows be positioned outside the visible area, which is
-#    what made 0.1.1 look overlapped when dragged.
+# 6. The window's floor and the preferences card's height are separate numbers.
+#    The floor is chrome + the scroll view's 180pt minimum; the card keeps its
+#    own constant because it lives in the scroll view and grows by scrolling,
+#    not by resizing. What this check actually protects is the wiring -- that
+#    minSize is derived from the named constant rather than a duplicated
+#    literal, and that the card really is the scroll view's document view.
+#    NOTE: it does NOT verify that the floor covers the card. It did not before
+#    the install-channel row either; the card scrolls when it does not.
 if grep -q "minSize = NSSize(width: 540, height: Self.naturalContentHeight)" Sources/DashboardWindow.swift \
-   && grep -q "private static let naturalContentHeight: CGFloat = 538" Sources/DashboardWindow.swift \
+   && grep -q "private static let naturalContentHeight: CGFloat = 592" Sources/DashboardWindow.swift \
    && grep -q "preferencesScroll.documentView = preferencesCard" Sources/DashboardWindow.swift; then
     pass "panel minimum size is derived from its fixed-height rows"
 else

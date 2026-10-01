@@ -66,7 +66,7 @@ silently drops the user's existing configuration:
 ```
 CFBundleIdentifier = ai.deepseek.dsh-bar
 UserDefaults keys  = DSH_CustomPort, DSH_GlobalHotKey*, DSH_Language,
-                     DSH_AutoRestart, DSH_LaunchAtLogin
+                     DSH_AutoRestart, DSH_LaunchAtLogin, DSH_DshTag
 State file         = ~/.dsh/dsh-bar-service.json
 ```
 

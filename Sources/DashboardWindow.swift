@@ -102,9 +102,9 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     /// The header, service card and footer are pinned at fixed heights, so they
     /// set the floor: 34 top + 72 header + 14 + 160 service + 14 + scroll +
     /// 14 + 32 footer + 18 bottom. The preferences card is inside a scroll view
-    /// and no longer contributes its full 432pt to that sum — that is what
+    /// and no longer contributes its full 486pt to that sum — that is what
     /// lets the panel be dragged shorter than its natural height.
-    private static let naturalContentHeight: CGFloat = 538
+    private static let naturalContentHeight: CGFloat = 592
     
     // Status Badge UI
     private let statusBadge = NSBox()
@@ -131,6 +131,26 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     private let hotKeyResetButton = NSButton()
     private let dshInfoLabel = NSTextField(labelWithString: L(.detectingDsh))
     private let dshActionButton = NSButton()
+    // Install-channel row. `tagInfoLabel` is the description under the row's
+    // title; it is held here rather than reached through the stack view that
+    // `makeTextStack` builds, the way `notificationInfoLabel` is, because
+    // `setupUI()` rebuilds that stack on every language change while these
+    // properties survive it.
+    private let tagPopup = NSPopUpButton()
+    private let tagInstallButton = NSButton()
+    private let tagInfoLabel = NSTextField(labelWithString: "")
+    /// Last probe result; the row re-renders from it whenever anything changes.
+    private var tagProbeState: ProbeState = .idle
+    /// The channel currently on disk, resolved from the last successful probe.
+    private var installedTagName: String?
+    /// Set after a successful install, cleared when the service restarts.
+    private var pendingTagRestart = false
+    /// Whether the service was running when an install succeeded, so the
+    /// restart notice knows what the user has to do. See `clearPendingTagRestart`.
+    private var tagRestartFromRunning = false
+    /// The running state the previous `updateState` tick saw. `updateState` runs
+    /// every ~2s, so "the service restarted" has to be an edge, not a level.
+    private var lastTagServiceRunning = false
     private let autoRestartCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let notificationInfoLabel = NSTextField(labelWithString: L(.notifNotChecked))
     private let notificationActionButton = NSButton()
@@ -243,6 +263,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         updateHotKeyAppearance()
         autoRestartCheckbox.state = SettingsManager.shared.autoRestartEnabled ? .on : .off
         ServiceManager.shared.detectDshInstallation()
+        loadTagOptions()
         // Re-float explicitly: the panel may have been dropped to the normal
         // level when it lost focus before being closed.
         window?.level = .floating
@@ -268,7 +289,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             visualEffect.addSubview($0)
         }
 
-        // The preferences rows are a fixed 432pt stack, taller than the
+        // The preferences rows are a fixed 486pt stack, taller than the
         // smallest panel worth showing. Scrolling them is what lets the window
         // shrink below that height instead of clipping rows off the top.
         let preferencesScroll = NSScrollView()
@@ -287,7 +308,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         let cardFillsClip = preferencesCard.heightAnchor
             .constraint(greaterThanOrEqualTo: preferencesScroll.contentView.heightAnchor)
         let cardIsNaturalHeight = preferencesCard.heightAnchor
-            .constraint(equalToConstant: 432)
+            .constraint(equalToConstant: 486)
         cardIsNaturalHeight.priority = .defaultHigh
 
         NSLayoutConstraint.activate([
@@ -655,6 +676,47 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         dshActionButton.translatesAutoresizingMaskIntoConstraints = false
         dshRow.addSubview(dshActionButton)
 
+        let separator7 = makeSeparator()
+        card.addSubview(separator7)
+
+        let tagRow = NSView()
+        tagRow.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(tagRow)
+
+        tagInfoLabel.font = NSFont.systemFont(ofSize: 11)
+        tagInfoLabel.textColor = .secondaryLabelColor
+        tagInfoLabel.lineBreakMode = .byTruncatingTail
+        tagInfoLabel.translatesAutoresizingMaskIntoConstraints = false
+        // The description this row renders is dynamic (a probe failure replaces
+        // it), so `tagInfoLabel` is substituted into the stack the way
+        // `notificationInfoLabel` is, rather than the stack's own static label
+        // being hunted for later. Unlike the notification row, this one's static
+        // description and its live one are the SAME sentence, so keeping both
+        // would draw the line twice; the stack's placeholder is dropped and
+        // `tagInfoLabel` takes its slot, leaving the same two views every other
+        // row has.
+        let tagText = makeTextStack(
+            title: L(.installChannel),
+            description: L(.installChannelDesc)
+        )
+        if let placeholder = tagText.arrangedSubviews.last {
+            tagText.removeArrangedSubview(placeholder)
+            placeholder.removeFromSuperview()
+        }
+        tagText.addArrangedSubview(tagInfoLabel)
+        tagRow.addSubview(tagText)
+
+        tagPopup.removeAllItems()
+        tagPopup.target = self
+        tagPopup.action = #selector(didChangeTag)
+        tagPopup.controlSize = .small
+        tagPopup.translatesAutoresizingMaskIntoConstraints = false
+        tagRow.addSubview(tagPopup)
+
+        configureActionButton(tagInstallButton, title: L(.installEllipsis), action: #selector(didClickInstallTag))
+        tagInstallButton.controlSize = .small
+        tagRow.addSubview(tagInstallButton)
+
         NSLayoutConstraint.activate([
             title.topAnchor.constraint(equalTo: card.topAnchor, constant: 15),
             title.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 18),
@@ -768,7 +830,33 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             dshRow.topAnchor.constraint(equalTo: separator6.bottomAnchor),
             dshRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
             dshRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            dshRow.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
+            dshRow.heightAnchor.constraint(equalToConstant: 54),
+
+            separator7.topAnchor.constraint(equalTo: dshRow.bottomAnchor),
+            separator7.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
+            separator7.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
+            separator7.heightAnchor.constraint(equalToConstant: 1),
+
+            tagRow.topAnchor.constraint(equalTo: separator7.bottomAnchor),
+            tagRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
+            tagRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
+            tagRow.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
+
+            tagText.leadingAnchor.constraint(equalTo: tagRow.leadingAnchor),
+            tagText.centerYAnchor.constraint(equalTo: tagRow.centerYAnchor),
+            tagText.trailingAnchor.constraint(lessThanOrEqualTo: tagPopup.leadingAnchor, constant: -12),
+            tagPopup.trailingAnchor.constraint(equalTo: tagInstallButton.leadingAnchor, constant: -8),
+            tagPopup.centerYAnchor.constraint(equalTo: tagRow.centerYAnchor),
+            // 210pt fits the widest localized installed marker ("latest
+            // (0.2.0-rc.2, installed)", measured at 204pt). A narrower popup
+            // truncates every one of them.
+            tagPopup.widthAnchor.constraint(equalToConstant: 210),
+            tagPopup.heightAnchor.constraint(equalToConstant: 20),
+
+            tagInstallButton.trailingAnchor.constraint(equalTo: tagRow.trailingAnchor),
+            tagInstallButton.centerYAnchor.constraint(equalTo: tagRow.centerYAnchor),
+            tagInstallButton.widthAnchor.constraint(equalToConstant: 84),
+            tagInstallButton.heightAnchor.constraint(equalToConstant: 26),
 
             dshText.leadingAnchor.constraint(equalTo: dshRow.leadingAnchor),
             dshText.centerYAnchor.constraint(equalTo: dshRow.centerYAnchor),
@@ -900,6 +988,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     }
     
     func updateState(_ snapshot: ServiceSnapshot) {
+        clearPendingTagRestart(isRunning: snapshot.isRunning)
         let color: NSColor
         switch snapshot.phase {
         case .running:
@@ -991,7 +1080,71 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             dshActionButton.isEnabled = true
         }
 
+        refreshTagRow()
         updateUrlDisplay(port: SettingsManager.shared.port)
+    }
+
+    /// Re-render the install-channel row from the current state.
+    ///
+    /// Every path that can change the row funnels through here: the probe
+    /// finishing, the user picking a tag, an install ending, the service
+    /// starting or stopping, the panel opening. One apply point means the row
+    /// cannot show a stale version next to a fresh popup.
+    private func refreshTagRow() {
+        let presentation = tagRowPresentation(
+            state: tagProbeState,
+            installedTag: installedTagName,
+            isRunning: ServiceManager.shared.isRunning,
+            pendingRestart: pendingTagRestart
+        )
+
+        let options = tagProbeState.options()
+        tagPopup.removeAllItems()
+        for option in options {
+            let title = option.isInstalled
+                ? L(.tagInstalledSuffix, ["tag": option.tag, "version": option.version])
+                : "\(option.tag) — \(option.version)"
+            tagPopup.addItem(withTitle: title)
+            tagPopup.lastItem?.representedObject = option.tag
+        }
+        if let preferred = SettingsManager.shared.preferredDshTag,
+           let index = options.firstIndex(where: { $0.tag == preferred }) {
+            tagPopup.selectItem(at: index)
+        }
+        tagPopup.isEnabled = presentation.popupEnabled
+
+        tagInstallButton.title = presentation.installButtonTitle
+        tagInstallButton.isEnabled = presentation.installButtonEnabled
+        tagInfoLabel.stringValue = presentation.description
+        tagInfoLabel.textColor = presentation.showsRestartNotice
+            ? .systemOrange
+            : .secondaryLabelColor
+    }
+
+    /// Clear the "restart to use it" notice, but only on evidence.
+    ///
+    /// `updateState` runs every ~2s, so the notice cannot simply be dropped when
+    /// the service happens to be running when the tick arrives — that would wipe
+    /// it immediately after the install that set it, and the user would never
+    /// learn they had to restart. Two edges count:
+    ///
+    /// - the service went from not-running to running — that is the restart;
+    /// - the installed version changed, which means the service re-detected dsh
+    ///   and now runs the binary npm just wrote.
+    ///
+    /// An install performed while the service was already stopped needs no
+    /// restart at all, so that one clears at once: `tagRestartFromRunning`
+    /// records whether there was anything to restart in the first place.
+    private func clearPendingTagRestart(isRunning: Bool) {
+        defer { lastTagServiceRunning = isRunning }
+        guard pendingTagRestart else { return }
+
+        let restarted = isRunning && !lastTagServiceRunning
+        let versionChanged = tagProbeState.installedVersion != nil
+            && ServiceManager.shared.snapshot.dshVersion != tagProbeState.installedVersion
+        if !tagRestartFromRunning || restarted || versionChanged {
+            pendingTagRestart = false
+        }
     }
     
     // MARK: - Actions
@@ -1089,6 +1242,84 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             dshActionButton.title = L(.checkingEllipsis)
             ServiceManager.shared.detectDshInstallation { [weak self] _ in
                 self?.dshActionButton.isEnabled = true
+            }
+        }
+    }
+
+    /// Record the user's chosen channel. Nothing is installed here — the
+    /// Install button beside the popup is the only thing that runs npm.
+    @objc private func didChangeTag() {
+        guard let tag = tagPopup.selectedItem?.representedObject as? String,
+              DshVersionController.validTag(tag) else { return }
+        SettingsManager.shared.preferredDshTag = tag
+        refreshTagRow()
+    }
+
+    /// Fetch the dist-tags and resolve which channel is on disk.
+    ///
+    /// Runs on every panel open, like the binary check next to it: tags move
+    /// between launches and the user's dsh can be upgraded by something else
+    /// entirely (nvm, brew, another terminal).
+    private func loadTagOptions() {
+        // A panel opened twice while a probe is in flight must not stack two
+        // requests. Nothing else blocks the retry: after a failure the state is
+        // `.failed`, not `.loading`, so the next open probes again.
+        guard !tagProbeState.isLoading else { return }
+        tagProbeState = .loading
+        refreshTagRow()
+        DshVersionController.shared.fetchTags { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let tags):
+                let installed = ServiceManager.shared.snapshot.dshVersion
+                self.tagProbeState = .loaded(tags: tags, installedVersion: installed)
+                self.installedTagName = self.tagProbeState.installedTag
+            case .failure(let reason):
+                self.tagProbeState = .failed(reason)
+                self.installedTagName = nil
+            }
+            self.refreshTagRow()
+        }
+    }
+
+    /// Confirm, run, report. Nothing here restarts the service or rolls back on
+    /// failure — see the spec's "明确不做的事".
+    @objc private func didClickInstallTag() {
+        guard let tag = tagPopup.selectedItem?.representedObject as? String,
+              DshVersionController.validTag(tag),
+              let command = DshVersionController.installCommand(forTag: tag) else { return }
+        guard !DshVersionController.shared.isInstalling else { return }
+
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = L(.installConfirmTitle)
+        // The command is shown verbatim so the user approves the exact thing
+        // that will run, global-prefix permissions included.
+        alert.informativeText = L(.installConfirmBody, ["command": command])
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: L(.installEllipsis))
+        alert.addButton(withTitle: L(.cancel))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        SettingsManager.shared.preferredDshTag = tag
+        tagInstallButton.isEnabled = false
+        let wasRunning = ServiceManager.shared.isRunning
+        DshVersionController.shared.install(tag: tag) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success:
+                // Re-probe rather than assume: npm can exit 0 having changed
+                // nothing, and the honest answer is the one the binary reports.
+                self.pendingTagRestart = wasRunning
+                self.tagRestartFromRunning = wasRunning
+                ServiceManager.shared.detectDshInstallation()
+                self.loadTagOptions()
+            case .failure(let error):
+                self.showAlert(
+                    title: L(.installFailedTitle),
+                    message: error.localizedDescription
+                )
+                self.refreshTagRow()
             }
         }
     }
@@ -1375,6 +1606,12 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             self.launchAtLoginCheckbox.state = SettingsManager.shared.isLaunchAtLoginEnabled ? .on : .off
             self.autoRestartCheckbox.state = SettingsManager.shared.autoRestartEnabled ? .on : .off
             self.portField.stringValue = "\(SettingsManager.shared.port)"
+            // `setupUI()` above rebuilt the popup with no items. `loadTagOptions`
+            // sets `.loading` and refreshes on its own; the explicit refresh after
+            // it covers the case where a probe was already in flight and the
+            // guard returned, leaving the freshly built views unfilled.
+            self.loadTagOptions()
+            self.refreshTagRow()
             if wasVisible {
                 window.makeKeyAndOrderFront(nil)
             }
