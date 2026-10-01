@@ -77,6 +77,7 @@ xattr -cr "/Applications/DeepSeek Harness Bar.app"
   - **全局热键**：录制自定义全局热键，录完立即生效。
   - **开机自启动**（Launch at login）。
   - 检查 DSH CLI 路径和版本，并在缺失时提供安装引导。
+  - **安装通道**：从 `latest` / `next` / `alpha` 等 npm dist-tag 中选择要安装的 dsh 版本，当前已安装的通道会标注 `(installed)`；确认后执行 `npm install -g @deepseek-ai/dsh@<tag>`，服务运行中也可安装，提示"重启后生效"且不会自动重启。安装失败时直接显示 npm 的原始报错，不回滚。选择的通道只会被记住，不会自动安装。
   - 复制本地 Web 地址、打开内置实时日志。
   - 启动或重启 DSH Bar、启动或重启服务时都不会自动打开 Web 界面。
 
@@ -125,8 +126,8 @@ xattr -cr "/Applications/DeepSeek Harness Bar.app"
 发布前可在本地复现同样的产物：
 
 ```bash
-VERSION=0.1.3 ./build.sh          # 通用二进制 + ad-hoc 签名
-VERSION=0.1.3 SIGNING_IDENTITY="Developer ID Application: …" ./build.sh
+VERSION=0.1.4 ./build.sh          # 通用二进制 + ad-hoc 签名
+VERSION=0.1.4 SIGNING_IDENTITY="Developer ID Application: …" ./build.sh
 ```
 
 ### 方式二：从源码编译并安装
@@ -170,6 +171,7 @@ dsh-bar-macos/
 │   ├── DashboardWindow.swift   # 毛玻璃偏好设置面板
 │   ├── LogWindow.swift         # 内置实时日志窗口
 │   ├── DshInstallAssistant.swift # DSH/npm 安装引导
+│   ├── DshVersionController.swift # npm dist-tag 探测与按 tag 安装 dsh
 │   ├── ExternalServicePrompt.swift # 结束外部启动服务的确认弹窗
 │   ├── ServiceNotifier.swift   # 系统通知与不可用时的降级
 │   └── Localization.swift      # 中英双语文案表（枚举键 + 缺失回退英文）
