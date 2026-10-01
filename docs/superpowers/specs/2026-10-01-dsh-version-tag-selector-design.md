@@ -101,16 +101,19 @@ func install(tag: String, completion: @escaping (Result<String, Error>) -> Void)
 在偏好区 "DSH Command Line" 行**下面**新增一行，结构复用现有 `makeTextStack(title:description:)` + 右侧控件的模式：
 
 ```
-┌────────────────────────────────────────────────┐
-│ DSH Command Line                               │
-│ /opt/homebrew/bin/dsh • 0.2.0-rc.2    [Recheck] │
-├────────────────────────────────────────────────┤
-│ Install channel                    ┌─────────┐ │
-│ Picks the npm tag to install.      │ latest ▾│ │
-│                                    └─────────┘ │
-│                                    [ Install ] │
-└────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ DSH Command Line                                         │
+│ /opt/homebrew/bin/dsh • 0.2.0-rc.2            [Recheck]   │
+├──────────────────────────────────────────────────────────┤
+│ Install channel                        ┌───────────────┐  │
+│ Picks the npm tag to install.          │ latest ▾      │ [Install] │
+│                                        └───────────────┘         │
+└──────────────────────────────────────────────────────────┘
 ```
+
+下拉框与 Install 按钮**并排**，与 `portRow`（输入框 + Reset）、`shortcutRow`（按钮 + Reset）一致。最初的设计草稿把 Install 画在下拉框**下方**；实测证明那样放会让按钮落到卡片底边之外 4.5pt（`tagRow` 是无固定高度的撑余行，下拉框 `centerY` 居中后按钮整体偏下），所以改为并排。
+
+下拉框宽度取 **210pt**，而不是沿用 `languageRow` 的 148pt —— 148pt 是给 `English`/`中文` 这类短标题的。实测小号 `NSPopUpButton` 的 `fittingSize.width`：`latest` 74、`alpha` 73、`0.1.7-alpha.2` 117、而 `latest (0.2.0-rc.2, installed)` 需要 **204**。中文标题 `latest（0.2.0-rc.2，已安装）` 200，比英文窄。
 
 - **下拉框**：只列 registry 返回的 tag。当前实际安装的版本所对应的 tag 加 `(installed)` 后缀。
 - **Install 按钮**：仅当「选中 tag ≠ 当前已装 tag」时可用。选到已装的那个就只是重装同一个东西，不该诱导点击。
@@ -122,12 +125,21 @@ func install(tag: String, completion: @escaping (Result<String, Error>) -> Void)
 
 偏好区是固定高度栈，放在 `preferencesScroll` 里。加一行意味着改两个常量：
 
-| 常量 | 位置 | 值 |
-| :--- | :--- | :--- |
-| `cardIsNaturalHeight` | `Sources/DashboardWindow.swift:213` | 432 → 486 |
-| `naturalContentHeight` | `Sources/DashboardWindow.swift:30` | 538 → 592 |
+| 常量 | 位置 | 值 | 性质 |
+| :--- | :--- | :--- | :--- |
+| `cardIsNaturalHeight` | `Sources/DashboardWindow.swift:213` | 432 → 486 | **必需**：固定部分变成 382 + `dshRow` 54 + `separator7` 1 = 437，保持 432 会欠 5pt 导致约束冲突 |
+| `naturalContentHeight` | `Sources/DashboardWindow.swift:30` | 538 → 592 | **仅观感**：让窗口最小高度时多露出 54pt 的行（可视区 180 → 234）；不改也不会裁掉任何内容，卡片本来就在滚动视图里 |
 
-新行沿用相邻行的 54pt 高度。新增的分隔线插入到 `dshRow` 与新行之间，约束按现有 `separator1...separator6` 的模式继续编号。
+实测（用 layout harness 驱动真实 `DashboardWindowController`）：
+
+```
+scroll slice = min(windowContentHeight - 358, cardHeight)
+card height  = 自己的常量，与窗口高度无关
+```
+
+卡片在任何 ≥538 的窗口尺寸下都是 432，变化的是滚动可视区。`538 = 358pt 外框 + 滚动视图自身的 180pt 下限`（`Sources/DashboardWindow.swift:232`），**不是**卡片高度 —— `Sources/DashboardWindow.swift:26-30` 的注释本来就这么说。
+
+`dshRow` 补上显式 `heightAnchor.constraint(equalToConstant: 54)`，新的 tag 行接手撑余行的角色（实测分到 51pt）且**不加固定高度**。新增的分隔线编号 `separator7`，插在 `dshRow` 与新行之间。
 
 ## 安全与失败约束
 

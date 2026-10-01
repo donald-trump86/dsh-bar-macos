@@ -957,17 +957,45 @@ and add to the constraint block at `:691-703`, replacing the `dshRow.bottomAncho
             tagText.leadingAnchor.constraint(equalTo: tagRow.leadingAnchor),
             tagText.centerYAnchor.constraint(equalTo: tagRow.centerYAnchor),
             tagText.trailingAnchor.constraint(lessThanOrEqualTo: tagPopup.leadingAnchor, constant: -12),
-            tagPopup.trailingAnchor.constraint(equalTo: tagRow.trailingAnchor),
+            tagPopup.trailingAnchor.constraint(equalTo: tagInstallButton.leadingAnchor, constant: -8),
             tagPopup.centerYAnchor.constraint(equalTo: tagRow.centerYAnchor),
-            tagPopup.widthAnchor.constraint(equalToConstant: 148),
+            tagPopup.widthAnchor.constraint(equalToConstant: 210),
+            tagPopup.heightAnchor.constraint(equalToConstant: 20),
 
-            tagInstallButton.leadingAnchor.constraint(equalTo: tagPopup.leadingAnchor),
-            tagInstallButton.trailingAnchor.constraint(equalTo: tagPopup.trailingAnchor),
-            tagInstallButton.topAnchor.constraint(equalTo: tagPopup.bottomAnchor, constant: 4),
-            tagInstallButton.heightAnchor.constraint(equalToConstant: 24)
+            tagInstallButton.trailingAnchor.constraint(equalTo: tagRow.trailingAnchor),
+            tagInstallButton.centerYAnchor.constraint(equalTo: tagRow.centerYAnchor),
+            tagInstallButton.widthAnchor.constraint(equalToConstant: 84),
+            tagInstallButton.heightAnchor.constraint(equalToConstant: 26)
 ```
 
-**Note the geometry.** The Install button sits BELOW the popup, both sharing the popup's 148pt width and trailing edge — this is the layout the spec's ASCII sketch shows at `docs/superpowers/specs/2026-10-01-dsh-version-tag-selector-design.md:103-113`, and it is why `tagRow` gets no explicit height: it is the slack-absorbing bottom row, exactly like `dshRow` was before. `dshRow` gains an explicit `54` so the slack does not land on it. Do not add a height to `tagRow`.
+**Two geometry corrections, both measured, not derived.** An earlier draft of this step stacked the Install button BELOW the popup and pinned the popup at 148pt. Both are wrong, and both were caught by driving the real `DashboardWindowController` through a layout harness rather than by reasoning about the constraint algebra.
+
+**1. The stacked layout puts the button outside the card.** With the popup `centerY`-anchored in the 51pt slack row and the button 4pt below the popup, the measured frames are popup `y = 15.5 .. 35.5` and button `y = -12.5 .. 11.5`. The row is unflipped, so a negative y is *below* its bottom edge; in card coordinates the button lands at `y = -4.5 .. 19.5` in a 486pt card whose bottom 8pt is padding — the button hangs 4.5pt past the card's bottom edge. Nothing reports this as a failure: every constraint is satisfied at `.defaultHigh` or lower, so the button is simply drawn outside its container.
+
+**2. A 148pt popup truncates every installed marker.** These are not the short language names `languageRow` carries. Measured `fittingSize.width` of a small `NSPopUpButton` per title:
+
+| title | width |
+| :--- | --- |
+| `latest` | 74 |
+| `alpha` | 73 |
+| `0.1.7-alpha.2` | 117 |
+| `latest (0.2.0-rc.2, installed)` | **204** |
+| `latest（0.2.0-rc.2，已安装）` | 200 |
+
+So the popup needs ~210pt for the widest localized title, not 148. Chinese is *narrower* here (200 vs 204) because full-width parentheses and three CJK glyphs cost less than the English words.
+
+**The corrected layout is side by side**, which is also what every other two-control row in this card does (`portRow`: field + reset; `shortcutRow`: button + reset). Measured with the constraints above on the real card at H=592:
+
+```
+tagRow h = 51.0
+text   x =   16.0 ..  107.5   (fittingSize.width = 91.5)
+popup  x =  141.0 ..  351.0   (w = 210)
+button x =  359.0 ..  443.0   (w =  84)
+```
+
+Text is clear of the popup with 49.5pt to spare, both controls sit inside the row, and neither overlaps the other. The button is 26pt tall to match `dshActionButton` rather than a small control's natural 20pt, so it reads as the row's primary action beside the picker.
+
+**Why `tagRow` still gets no explicit height:** it is the slack-absorbing bottom row, exactly like `dshRow` was before, and it needs that more than ever — 51pt to hold a 20pt popup with room around it. `dshRow` gains an explicit `54` so the slack does not land on it. Do not add a height to `tagRow`.
 
 - [ ] **Step 4: Update the two height constants and the check that pins them**
 
