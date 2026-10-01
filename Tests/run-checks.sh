@@ -119,4 +119,14 @@ else
     fail "DshVersionController must call ServiceManager.commandEnvironment(), not re-derive PATH"
 fi
 
+# 8. Tag logic and the row's render decision both change silently when wrong:
+#    a refused tag reaches a command the user approved, and an enabled button
+#    over an empty dropdown reads as working. Both are checked against the real
+#    source, not a copy.
+if "$SCRIPT_DIR/tag-probe-check.sh" >/dev/null 2>&1; then
+    pass "npm tag command assembly and install-channel row states are correct"
+else
+    fail "tag probe check failed — run $SCRIPT_DIR/tag-probe-check.sh to see why"
+fi
+
 exit $FAILED

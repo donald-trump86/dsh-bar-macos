@@ -19,6 +19,83 @@ private final class DashboardPanelWindow: NSWindow {
     }
 }
 
+/// What the install-channel row should currently say and which of its controls
+/// are live. Kept as a value so the decision can be tested without a window.
+struct TagRowPresentation: Equatable {
+    var title: String
+    var description: String
+    var popupTitle: String          // "" while loading; the selected item otherwise
+    var popupEnabled: Bool
+    var installButtonTitle: String
+    var installButtonEnabled: Bool
+    var showsRestartNotice: Bool
+}
+
+/// The single source of truth for the install-channel row's appearance.
+///
+/// Pure: every input is a parameter, so the truth table in
+/// `Tests/tag-probe-check.sh` can pin every state the row can be in. Reading
+/// the stored preference and the controller's busy flag are the only two reads
+/// of app state, and both are read-only.
+func tagRowPresentation(
+    state: ProbeState,
+    installedTag: String?,
+    isRunning: Bool,
+    pendingRestart: Bool
+) -> TagRowPresentation {
+    let options = state.options()
+    let title = L(.installChannel)
+
+    // Only the probe is doing work here, so only the probe changes its button;
+    // with nothing to install, "Install…" stays the label the user expects.
+    // The two arms this replaces gave `.failed` and the default case the same
+    // string, so the switch was three branches of one decision.
+    let button: String = state.isLoading ? L(.checkingEllipsis) : L(.installEllipsis)
+
+    var titles = [String]()
+    titles.reserveCapacity(options.count)
+    for option in options {
+        // Built by substituting into the localized template the way
+        // Localization.string does, so the "(installed)" marker is translatable
+        // rather than a hardcoded String(format:).
+        var line = L(.tagInstalledSuffix)
+        for (name, value) in ["tag": option.tag, "version": option.version] {
+            line = line.replacingOccurrences(of: "{\(name)}", with: value)
+        }
+        titles.append(option.isInstalled ? line : option.tag)
+    }
+
+    let selected = SettingsManager.shared.preferredDshTag
+    let selection = options.firstIndex { $0.tag == selected } ?? 0
+    let popupTitle = titles.indices.contains(selection) ? titles[selection] : ""
+    // Nothing to install when no channel is known, or when the only channel the
+    // registry offers is the one already on disk. Reinstalling the same version
+    // is not a repair, and offering it invites a pointless click.
+    let hasOtherChannel = options.contains { $0.tag != installedTag }
+
+    // A failed probe has nothing to offer, so its reason takes over the
+    // description: a dropdown that simply vanished reads as a broken app rather
+    // than an unreachable network. The reason outranks the pending-restart
+    // notice because a failure is what the user has to act on.
+    let restingDescription = pendingRestart
+        ? L(.installDoneRestartNotice)
+        : (isRunning ? L(.portChangedAppliesLater) : L(.installChannelDesc))
+
+    return TagRowPresentation(
+        title: title,
+        // The running-service wording is deliberately generic: this row also
+        // covers an install performed while the service was stopped, and
+        // .portChangedRestartToApply ("Restart to Apply") would be a lie
+        // there. The full sentence lives in the confirmation dialog.
+        description: state.failure?.message ?? restingDescription,
+        popupTitle: popupTitle,
+        popupEnabled: !options.isEmpty,
+        installButtonTitle: button,
+        installButtonEnabled: hasOtherChannel && !DshVersionController.shared.isInstalling,
+        showsRestartNotice: pendingRestart
+    )
+}
+
 final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     static let shared = DashboardWindowController()
 

@@ -10,6 +10,7 @@ final class SettingsManager {
     private let keyHotKeyModifiers = "DSH_GlobalHotKeyModifiers"
     private let keyHotKeyTitle = "DSH_GlobalHotKeyTitle"
     private let keyPort = "DSH_CustomPort"
+    private let keyPreferredDshTag = "DSH_DshTag"
     
     var onHotKeyChanged: (() -> Void)?
 
@@ -92,6 +93,31 @@ final class SettingsManager {
         }
         set {
             UserDefaults.standard.set(newValue, forKey: "DSH_AutoRestart")
+        }
+    }
+
+    // MARK: - Install channel
+    /// The npm dist-tag the user last chose (e.g. "latest", "next", "alpha").
+    ///
+    /// Deliberately stores the TAG NAME and not a version number: dist-tags move,
+    /// so a stored version would become an invalid menu item the next time the
+    /// package is published. The value seeds the popup's selection and is never
+    /// read in order to install — installing is always an explicit user action.
+    ///
+    /// Validated on read as well as on write: a dist-tag deleted upstream, or a
+    /// value hand-edited into the defaults plist, must read back as `nil` rather
+    /// than as a selectable item that no longer exists.
+    var preferredDshTag: String? {
+        get {
+            guard let tag = UserDefaults.standard.string(forKey: keyPreferredDshTag) else { return nil }
+            return DshVersionController.validTag(tag) ? tag : nil
+        }
+        set {
+            if let newValue, DshVersionController.validTag(newValue) {
+                UserDefaults.standard.set(newValue, forKey: keyPreferredDshTag)
+            } else {
+                UserDefaults.standard.removeObject(forKey: keyPreferredDshTag)
+            }
         }
     }
 

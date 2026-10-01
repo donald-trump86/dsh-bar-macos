@@ -71,6 +71,15 @@ final class Localization {
         case language, languageDesc, languageAutomatic
         case searchingPath, detectingDsh, installedAt, notFoundInstallNpm
 
+        // Install channel
+        case installChannel, installChannelDesc
+        case tagInstalledSuffix
+        case tagProbeOffline, tagProbeTimedOut, tagProbeNotFound, tagProbeBadResponse
+        case installConfirmTitle, installConfirmBody
+        case installFailedTitle, installDoneRestartNotice
+        case installTagInvalid, installAlreadyRunning, installNoOutput
+        case installFailedBody, installNpmNotFound, installCouldNotStart
+
         // Port change dialog
         case portUpdatedTitle, portUpdatedBody
 
@@ -284,6 +293,25 @@ final class Localization {
         .installedAt: "Installed: {path}{version}",
         .notFoundInstallNpm: "Not found — install with npm to start the service",
 
+        // Install channel
+        .installChannel: "Install Channel",
+        .installChannelDesc: "Choose which dsh release channel to install. The change applies after the service restarts.",
+        .tagInstalledSuffix: "{tag} ({version}, installed)",
+        .tagProbeOffline: "Could not reach the npm registry",
+        .tagProbeTimedOut: "The npm registry did not answer in time",
+        .tagProbeNotFound: "This package is not on the npm registry",
+        .tagProbeBadResponse: "The npm registry returned an unexpected response",
+        .installConfirmTitle: "Install this channel?",
+        .installConfirmBody: "This runs the following command:\n\n{command}\n\nThe service keeps running until you restart it.",
+        .installFailedTitle: "Install failed",
+        .installDoneRestartNotice: "Installed. Restart the service to use it.",
+        .installTagInvalid: "This channel name is not a valid npm tag.",
+        .installAlreadyRunning: "An install is already running. Wait for it to finish.",
+        .installNoOutput: "npm produced no output, so the result is unknown.",
+        .installFailedBody: "npm exited with status {code}:\n{output}",
+        .installNpmNotFound: "npm was not found on your PATH.",
+        .installCouldNotStart: "npm could not be started: {reason}",
+
         // Port change dialog
         .portUpdatedTitle: "Port Updated to {port}",
         .portUpdatedBody: "The server is currently running. Would you like to restart the service on the new port now?",
@@ -490,6 +518,25 @@ final class Localization {
         .detectingDsh: "正在检测 DSH CLI…",
         .installedAt: "已安装：{path}{version}",
         .notFoundInstallNpm: "未找到 — 需用 npm 安装后才能启动服务",
+
+        // Install channel
+        .installChannel: "安装通道",
+        .installChannelDesc: "选择要安装的 dsh 发布通道。修改将在服务重启后生效。",
+        .tagInstalledSuffix: "{tag}（{version}，已安装）",
+        .tagProbeOffline: "无法连接 npm registry",
+        .tagProbeTimedOut: "npm registry 响应超时",
+        .tagProbeNotFound: "npm registry 上没有这个包",
+        .tagProbeBadResponse: "npm registry 返回了无法解析的内容",
+        .installConfirmTitle: "要安装这个通道吗？",
+        .installConfirmBody: "将执行以下命令：\n\n{command}\n\n服务会继续运行，直到你重启它。",
+        .installFailedTitle: "安装失败",
+        .installDoneRestartNotice: "已安装，重启服务后生效。",
+        .installTagInvalid: "这个通道名不是合法的 npm tag。",
+        .installAlreadyRunning: "已有安装任务在进行，请等待它结束。",
+        .installNoOutput: "npm 没有输出，结果未知。",
+        .installFailedBody: "npm 以状态码 {code} 退出：\n{output}",
+        .installNpmNotFound: "在 PATH 中没有找到 npm。",
+        .installCouldNotStart: "无法启动 npm：{reason}",
 
         // Port change dialog
         .portUpdatedTitle: "端口已改为 {port}",
