@@ -979,7 +979,36 @@ Three edits that must land together:
 
 Also update the two comments that quote the old numbers: `:194` ("fixed 432pt stack" → "fixed 486pt stack") and `:28` ("no longer contributes its full 432pt" → "486pt").
 
-The arithmetic, so nobody re-derives it wrongly: the stack grew by one row plus one separator. Row 54 + separator 1 = 55, minus the 8pt bottom inset the new row inherits from the one it replaces… the row is 55pt taller in the card, and `naturalContentHeight` is the window floor: 538 + 54 = 592. `cardIsNaturalHeight` 432 + 54 = 486. Both are the same 54 — the separator is absorbed because the slack row was already absorbing it. Both constants move by exactly the new row's height.
+**The arithmetic, measured rather than derived.** An earlier draft of this plan claimed the two constants move together because the card grew by 54. **That is false**, and it was measured to be false rather than argued: a harness driving the real `DashboardWindowController` and forcing `layoutSubtreeIfNeeded()` shows
+
+```
+scroll slice = min(windowContentHeight - 358, cardHeight)
+card height  = its own constant, independent of the window height
+```
+
+Today the card is 432 at every window size from 538 (minimum) upward; the slice is what grows, from 180 to 432 and then stops. `naturalContentHeight = 538` is 358pt of chrome (34 + 72 + 14 + 160 + 14 above, 14 + 32 + 18 below) **plus the scroll view's own 180pt floor** at `Sources/DashboardWindow.swift:232` — it is not the card height, and the comment at `:26-30` already says so ("The preferences card is inside a scroll view and no longer contributes its full 432pt to that sum").
+
+So the two edits are not the same kind of edit:
+
+- **`cardIsNaturalHeight` 432 → 486 is load-bearing.** The fixed parts become 382 + `dshRow` 54 + `separator7` 1 = 437, so leaving the card at 432 underflows by 5pt and the constraint set conflicts. 486 gives `tagRow` 49pt of slack, matching the 50pt slack row it replaces. An exact-fit 437 also resolves, but leaves the bottom row unpadded unlike every other row, so 486 is kept.
+- **`naturalContentHeight` 538 → 592 is cosmetic.** It shows 54 more points of rows at the floor (slice 180 → 234). Worth having, but nothing depends on it. Reverting it later would not clip anything — the card scrolls either way.
+
+Measured with both edits applied: at H=592 the card is 486 and the slice 234, with no negative row heights and no dropped constraints. The new row is reachable by scrolling; it is not visible at the window's minimum size, and neither is the existing `dshRow` it replaces.
+
+**Check 6 inherits a wrong premise.** `Tests/run-checks.sh:97-107` says the window's minimum size "must be the height they add up to". That was already untrue before this feature. It greps three literals, so it will still pass after the bump, but it does not verify what its comment claims. Do not propagate the "both move by the same 54" reasoning into the check's comment — update the check's comment instead, or leave it alone and note the gap.
+
+Concretely, in Task 4 Step 4 also replace check 6's comment block with a truthful one, leaving its three greps alone:
+
+```bash
+# 6. The window's floor and the preferences card's height are separate numbers.
+#    The floor is chrome + the scroll view's 180pt minimum; the card keeps its
+#    own constant because it lives in the scroll view and grows by scrolling,
+#    not by resizing. What this check actually protects is the wiring -- that
+#    minSize is derived from the named constant rather than a duplicated
+#    literal, and that the card really is the scroll view's document view.
+#    NOTE: it does NOT verify that the floor covers the card. It did not before
+#    this feature either; the card scrolls when it does not.
+```
 
 - [ ] **Step 5: Write the render application**
 
@@ -1239,6 +1268,8 @@ The "**Note on the naming decision:**" block in Task 2 no longer leaves a choice
 **2b. The test harness was wrong, not just the plan.** Task 2's check was specified with `assert()` compiled at `-O`. On this toolchain `assert(1 == 2)` exits 0 under `-O` and traps under `-Onone` (verified directly). The plan's test therefore **could not fail**: three mutations — loosening the allowlist to `^[^ ]+$`, dropping `@\(tag)` from the command, replacing the allowlist guard with `!tag.isEmpty` — all printed `PASS`. The committed `Tests/tag-probe-check.sh` uses an always-on `expect(_:_:)` helper instead, keeping the plan's assertion expressions and failure strings verbatim; the same three mutations now fail (`FAIL: hostile tag accepted: "@next"`, `FAIL: latest produced the wrong command`) and the restored source passes. **Task 3 must use `expect`, not `assert`,** in the render truth table.
 
 **2c. Two compile defects in Task 2's own code blocks.** `static func` is illegal at top level in `main.swift`, so the extracted members are wrapped in a namespace type and forwarded under their file-scope names; and `validTag` must be extracted alongside `installCommand`, since the latter calls it. Both are handled in the committed script.
+
+**2e. A geometry claim in Task 4 was false, and measurement is what caught it.** The plan asserted that `naturalContentHeight` (538 → 592) and `cardIsNaturalHeight` (432 → 486) must move together because the card grew 54. They were never coupled: driving the real `DashboardWindowController` through a layout harness shows `scroll slice = min(H - 358, cardHeight)`, with the card height independent of the window. 538 is chrome plus the scroll view's own 180pt floor, exactly as the comment at `Sources/DashboardWindow.swift:26-30` says. Only the card constant is load-bearing — at 432 the new row underflows by 5pt. Task 4 Step 4 now carries the measured relationship, says which edit matters, and replaces check 6's comment, whose stated premise ("the window's minimum size must be the height they add up to") was already false before this feature.
 
 **2d. Pre-existing defect found outside this feature's scope.** `Tests/probe-gate-check.sh` — the precedent every check here follows — builds with `swiftc -O` and asserts with `assert()`, so it is currently **vacuous**: its sockets and timing run, but no assertion is ever evaluated. This predates the tag selector and is not touched by Tasks 1-4. It is worth a follow-up, because a passing `probe-gate-check` line in `make check` currently means nothing.
 
