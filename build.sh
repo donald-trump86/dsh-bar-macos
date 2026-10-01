@@ -43,6 +43,7 @@ SOURCE_FILES=(
     Sources/DashboardWindow.swift
     Sources/LogWindow.swift
     Sources/DshInstallAssistant.swift
+    Sources/DshVersionController.swift
     Sources/ExternalServicePrompt.swift
     Sources/ServiceNotifier.swift
     Sources/Localization.swift
