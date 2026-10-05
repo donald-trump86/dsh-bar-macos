@@ -24,6 +24,7 @@ final class LogWindowController: NSWindowController, NSWindowDelegate, NSSearchF
     private var languageObserverToken: UUID?
     private var refreshTimer: Timer?
     private var readOffset: UInt64 = 0
+    private var readIdentity: LogFileIdentity?
     private var rawText = ""
     private var isPaused = false
     private var readInFlight = false
@@ -202,42 +203,41 @@ final class LogWindowController: NSWindowController, NSWindowDelegate, NSSearchF
         readInFlight = true
         let url = ServiceManager.shared.logFileURL
         let offset = readOffset
+        let previousIdentity = readIdentity
         let generation = fillGeneration
 
         ioQueue.async { [weak self] in
             guard let self else { return }
-            let fileManager = FileManager.default
-            guard fileManager.fileExists(atPath: url.path),
-                  let attributes = try? fileManager.attributesOfItem(atPath: url.path),
-                  let number = attributes[.size] as? NSNumber else {
-                DispatchQueue.main.async {
-                    self.readInFlight = false
-                    self.statusLabel.stringValue = L(.logsNoFileYet)
-                }
-                return
-            }
-
-            let size = number.uint64Value
-            let initialTailSize: UInt64 = 512 * 1_024
-            let effectiveOffset: UInt64
-            if size < offset {
-                // File was truncated or rotated: start over from the new tail.
-                effectiveOffset = size > initialTailSize ? size - initialTailSize : 0
-            } else if offset == 0, size > initialTailSize {
-                effectiveOffset = size - initialTailSize
-            } else {
-                effectiveOffset = offset
-            }
             guard let handle = try? FileHandle(forReadingFrom: url) else {
                 DispatchQueue.main.async {
                     self.readInFlight = false
+                    guard generation == self.fillGeneration else { return }
+                    self.statusLabel.stringValue = FileManager.default.fileExists(atPath: url.path)
+                        ? L(.logsReadError, ["path": url.path]) : L(.logsNoFileYet)
+                }
+                return
+            }
+            defer { try? handle.close() }
+            let identity: LogFileIdentity
+            let size: UInt64
+            let effectiveOffset: UInt64
+            let data: Data
+            do {
+                (identity, size) = try LogFileIdentity.read(from: handle)
+                effectiveOffset = LogFileIdentity.readOffset(size: size, offset: offset,
+                                                            previous: previousIdentity, current: identity)
+                try handle.seek(toOffset: effectiveOffset)
+                // Snapshot size and a fixed cap prevent a rapidly growing legacy
+                // log from making read-to-EOF unbounded while we follow it.
+                data = try handle.read(upToCount: Int(min(size - effectiveOffset, 512 * 1024))) ?? Data()
+            } catch {
+                DispatchQueue.main.async {
+                    self.readInFlight = false
+                    guard generation == self.fillGeneration else { return }
                     self.statusLabel.stringValue = L(.logsReadError, ["path": url.path])
                 }
                 return
             }
-            handle.seek(toFileOffset: effectiveOffset)
-            let data = handle.readDataToEndOfFile()
-            handle.closeFile()
             let nextOffset = effectiveOffset + UInt64(data.count)
             let chunk = String(decoding: data, as: UTF8.self)
 
@@ -247,6 +247,7 @@ final class LogWindowController: NSWindowController, NSWindowDelegate, NSSearchF
                 // supersedes it; dropping the chunk avoids resurrecting old text.
                 guard generation == self.fillGeneration else { return }
                 self.readOffset = nextOffset
+                self.readIdentity = identity
                 if !chunk.isEmpty {
                     self.rawText.append(chunk)
                     if self.rawText.count > self.maximumBufferedCharacters {
@@ -294,11 +295,17 @@ final class LogWindowController: NSWindowController, NSWindowDelegate, NSSearchF
     @objc private func clearView() {
         fillGeneration += 1
         rawText = ""
-        if let attributes = try? FileManager.default.attributesOfItem(
-            atPath: ServiceManager.shared.logFileURL.path
-        ), let number = attributes[.size] as? NSNumber {
-            readOffset = number.uint64Value
+        if let handle = try? FileHandle(forReadingFrom: ServiceManager.shared.logFileURL) {
+            defer { try? handle.close() }
+            if let (identity, size) = try? LogFileIdentity.read(from: handle) {
+                readIdentity = identity
+                readOffset = size
+            } else {
+                readIdentity = nil
+                readOffset = 0
+            }
         } else {
+            readIdentity = nil
             readOffset = 0
         }
         renderText(scrollToBottom: false)

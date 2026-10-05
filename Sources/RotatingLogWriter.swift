@@ -229,6 +229,29 @@ enum RotatingLogWriter {
     }
 }
 
+/// Snapshot the opened file, not the pathname: a rotated pathname can already
+/// be larger than the old offset by the time the next UI poll runs.
+struct LogFileIdentity: Equatable {
+    let device: UInt64
+    let inode: UInt64
+
+    static func read(from handle: FileHandle) throws -> (LogFileIdentity, UInt64) {
+        var info = stat()
+        guard fstat(handle.fileDescriptor, &info) == 0, info.st_size >= 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        return (LogFileIdentity(device: UInt64(UInt32(bitPattern: info.st_dev)), inode: UInt64(info.st_ino)), UInt64(info.st_size))
+    }
+
+    static func readOffset(size: UInt64, offset: UInt64, previous: LogFileIdentity?, current: LogFileIdentity) -> UInt64 {
+        let tail: UInt64 = 512 * 1024
+        if previous != current || size < offset || offset == 0 {
+            return size > tail ? size - tail : 0
+        }
+        return offset
+    }
+}
+
 /// Parent-side startup control only; the Bar never handles Web's byte stream.
 final class LogWriterProcess {
     private final class ControlState {

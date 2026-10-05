@@ -34,6 +34,34 @@ struct LogRotationChecks {
         assert(url("http://localhost:3080/\n") == nil)
         print("PASS Swift production constants and launch URL validation")
         try checkRealLaunch()
+        try checkFileIdentity()
+    }
+
+    static func checkFileIdentity() throws {
+        let old = LogFileIdentity(device: 1, inode: 2)
+        let fresh = LogFileIdentity(device: 1, inode: 3)
+        assert(LogFileIdentity.readOffset(size: 100, offset: 80, previous: old, current: fresh) == 0)
+        assert(LogFileIdentity.readOffset(size: 100, offset: 80, previous: old, current: old) == 80)
+        assert(LogFileIdentity.readOffset(size: 60, offset: 80, previous: old, current: old) == 0)
+        assert(LogFileIdentity.readOffset(size: 1024 * 1024, offset: 0, previous: nil, current: fresh) == 512 * 1024)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("dsh-identity-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("current")
+        try Data(repeating: 1, count: 80).write(to: path)
+        let oldHandle = try FileHandle(forReadingFrom: path)
+        defer { try? oldHandle.close() }
+        let (before, _) = try LogFileIdentity.read(from: oldHandle)
+        try FileManager.default.moveItem(at: path, to: directory.appendingPathComponent("archive"))
+        try Data(repeating: 2, count: 100).write(to: path)
+        let currentHandle = try FileHandle(forReadingFrom: path)
+        defer { try? currentHandle.close() }
+        let (current, size) = try LogFileIdentity.read(from: currentHandle)
+        assert(before != current && size == 100)
+        assert(LogFileIdentity.readOffset(size: size, offset: 80, previous: before, current: current) == 0)
+        let (stillOld, oldSize) = try LogFileIdentity.read(from: oldHandle)
+        assert(stillOld == before && oldSize == 80, "identity must follow the opened FD, not its replaced pathname")
+        print("PASS real inode replacement/regrowth and bounded-tail offsets")
     }
 
     static func checkRealLaunch() throws {

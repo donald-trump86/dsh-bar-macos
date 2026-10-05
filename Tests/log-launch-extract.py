@@ -15,6 +15,10 @@ assert "process.standardError = logger.outputHandle" in method
 assert method.index("LogWriterProcess.start(") < method.index("try process.run()")
 assert "process.terminate()" in method, "post-spawn failure can orphan Web"
 assert "fromLogOffset" not in source and "extractAuthenticatedURL" not in source
+window = (repo / "Sources/LogWindow.swift").read_text()
+assert "LogFileIdentity.read(from: handle)" in window and "self.readIdentity = identity" in window
+assert "previous: previousIdentity, current: identity" in window
+assert "readDataToEndOfFile()" not in window and "generation == self.fillGeneration" in window
 header = r'''import Foundation
 import Darwin
 final class LaunchHarness {
