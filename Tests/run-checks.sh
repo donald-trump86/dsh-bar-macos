@@ -133,4 +133,11 @@ else
     fail "tag probe check failed — run $SCRIPT_DIR/tag-probe-check.sh to see why"
 fi
 
+# 9. Exercise actual byte rotation, detached lifetime and log-follow offsets.
+if bash "$SCRIPT_DIR/log-rotation-check.sh"; then
+    pass "bounded web logger process and rotation behavior"
+else
+    fail "log rotation check failed — run bash $SCRIPT_DIR/log-rotation-check.sh to see why"
+fi
+
 exit $FAILED
