@@ -1174,6 +1174,14 @@ final class ServiceManager {
                     if finalProbe.isHarness { break }
                     if case .foreign = finalProbe, !process.isRunning { break }
                 }
+                // All failed probes must tear down our newly spawned Web on
+                // this background queue before dropping its persisted identity.
+                // Otherwise a TERM-ignoring process also strands the logger lock.
+                if case let .harness(pid, _) = finalProbe, pid == process.processIdentifier {
+                    // Our real Web owns the listener; keep it and its logger.
+                } else {
+                    Self.terminateFailedLaunch(process)
+                }
                 let launchAuthenticatedURL = logger.authenticatedURL
 
                 DispatchQueue.main.async {
@@ -1187,7 +1195,6 @@ final class ServiceManager {
                     switch finalProbe {
                     case let .harness(pid, detectedStart):
                         guard pid == process.processIdentifier else {
-                            if process.isRunning { process.terminate() }
                             self.clearManagedRecord()
                             let message = L(.portServedByOther, ["port": "\(currentPort)"])
                             self.updateSnapshot {
@@ -1227,7 +1234,6 @@ final class ServiceManager {
                         }
                         completion(true, nil)
                     case let .foreign(pid):
-                        if process.isRunning { process.terminate() }
                         self.clearManagedRecord()
                         let message = pid.map { L(.portUsedByPID, ["port": "\(currentPort)", "pid": "\($0)"]) }
                             ?? L(.portAlreadyInUse, ["port": "\(currentPort)"])
@@ -1240,7 +1246,6 @@ final class ServiceManager {
                         }
                         completion(false, message)
                     case .unavailable:
-                        if process.isRunning { process.terminate() }
                         self.clearManagedRecord()
                         let message = L(.serviceNotReady, ["port": "\(currentPort)"])
                         self.updateSnapshot {
@@ -1287,19 +1292,22 @@ final class ServiceManager {
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pidFileURL.path)
             return (process, logger)
         } catch {
-            // A failed PID write must not leave an untracked service running,
-            // even if this newly spawned Web ignores graceful termination.
-            if process.isRunning {
-                process.terminate()
-                let deadline = ProcessInfo.processInfo.systemUptime + 2
-                while process.isRunning, ProcessInfo.processInfo.systemUptime < deadline {
-                    Thread.sleep(forTimeInterval: 0.02)
-                }
-                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-                process.waitUntilExit()
-            }
+            Self.terminateFailedLaunch(process)
             throw error
         }
+    }
+
+    /// Only for a Process spawned by this launch, never for a discovered PID.
+    /// Run on the launch queue, not the main UI thread.
+    private static func terminateFailedLaunch(_ process: Process) {
+        guard process.isRunning else { return }
+        process.terminate()
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        while process.isRunning, ProcessInfo.processInfo.systemUptime < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        process.waitUntilExit()
     }
 
     private func runStopScript(port: Int) -> StopResult {
@@ -1638,7 +1646,9 @@ final class ServiceManager {
     func openBrowser() {
         // Only the token captured from this app's own launch is trusted. A
         // token mined from historical log text could belong to a dead process.
-        NSWorkspace.shared.open(authenticatedURL ?? baseUrl)
+        let currentLaunchURL = snapshot.isManaged && snapshot.pid == launchedProcess?.processIdentifier
+            ? launchedLogWriter?.authenticatedURL : nil
+        NSWorkspace.shared.open(authenticatedURL ?? currentLaunchURL ?? baseUrl)
     }
 
     /// Replaces the process token in log text so the exported/shared view never

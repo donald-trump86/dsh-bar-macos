@@ -8,6 +8,12 @@ source = (repo / "Sources/ServiceManager.swift").read_text()
 start = source.index("    private func launchProcess(")
 end = source.index("\n    private func runStopScript(", start)
 method = source[start:end].replace("private func launchProcess", "func launchProcess", 1)
+method = method.replace("private static func terminateFailedLaunch", "static func terminateFailedLaunch", 1)
+probe_start = source.index("    private func launchAndWait(")
+probe = source[probe_start:start]
+assert "Self.terminateFailedLaunch(process)" in probe
+assert "process.terminate()" not in probe, "final probe failures still abandon a TERM-ignoring Web"
+assert "launchedLogWriter?.authenticatedURL" in source and "snapshot.pid == launchedProcess?.processIdentifier" in source
 assert "LogWriterProcess.start(" in method, "Web still opens a direct unbounded log"
 assert "defer {" in method and "closeParentPipeHandles()" in method
 assert "process.standardOutput = logger.outputHandle" in method

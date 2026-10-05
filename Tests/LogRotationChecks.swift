@@ -82,8 +82,9 @@ struct LogRotationChecks {
         assert(storedPID == "\(process.processIdentifier)")
         for _ in 0..<100 where logger.authenticatedURL == nil { usleep(10_000) }
         assert(logger.authenticatedURL?.query == "token=launch-only")
-        kill(process.processIdentifier, SIGKILL)
-        process.waitUntilExit()
+        // Same production cleanup used when the final readiness probe fails.
+        LaunchHarness.terminateFailedLaunch(process)
+        assert(!process.isRunning, "readiness failure retained the Web/logger pipe")
         // The second start waits finitely for EOF and logger lock release.
         try FileManager.default.removeItem(at: destination)
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)

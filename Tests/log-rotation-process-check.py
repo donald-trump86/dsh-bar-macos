@@ -99,6 +99,32 @@ with tempfile.TemporaryDirectory(prefix="dsh-rotation-process-") as root:
     retained(path)
     print("PASS offline oversized legacy current and archives bounded")
 
+    path = root / "legacy-holders" / "dsh-web.log"
+    path.parent.mkdir()
+    path.write_bytes(b"legacy-still-open")
+    original_inode = path.stat().st_ino
+    for mode in (os.O_WRONLY, os.O_RDWR):
+        holder = os.open(path, mode)
+        try:
+            began = time.monotonic()
+            refused = subprocess.run([BINARY, "--internal-log-writer", str(path), "3080"],
+                                     input=b"", capture_output=True, timeout=8)
+            assert refused.returncode != 0 and b"READY" not in refused.stdout
+            assert time.monotonic() - began < 8
+            assert path.stat().st_ino == original_inode and path.read_bytes() == b"legacy-still-open"
+        finally:
+            os.close(holder)
+    holder = os.open(path, os.O_RDONLY)
+    try:
+        p = start(path)
+        finish(p)
+        assert os.read(holder, 100) == b"legacy-still-open"
+        assert Path(str(path) + ".1").stat().st_ino == original_inode
+        assert path.stat().st_ino != original_inode
+    finally:
+        os.close(holder)
+    print("PASS real read-only holder accepted; writable and read-write legacy holders refused untouched")
+
     path = root / "closed-control" / "dsh-web.log"
     p = start(path)
     p.stdout.close()

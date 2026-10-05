@@ -72,19 +72,61 @@ enum RotatingLogWriter {
         guard !existing.isEmpty else { return }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-        process.arguments = ["-t", "--"] + existing
+        process.arguments = ["-F", "pfa", "--"] + existing
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
         try process.run()
-        // With three regular files this is a tiny PID list; consume it before
-        // waiting so even many holders cannot deadlock the child on its pipe.
-        let result = pipe.fileHandleForReading.readDataToEndOfFile()
+        defer {
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            process.waitUntilExit()
+            try? pipe.fileHandleForReading.close()
+        }
+        // Bounded output and deadline: querying old holders cannot hang startup
+        // or buffer an arbitrarily large descriptor listing in the logger.
+        let reader = pipe.fileHandleForReading.fileDescriptor
+        let flags = fcntl(reader, F_GETFL)
+        guard flags >= 0, fcntl(reader, F_SETFL, flags | O_NONBLOCK) == 0 else { throw failure("inspect legacy writers") }
+        let deadline = ProcessInfo.processInfo.systemUptime + 1
+        var result = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            guard ProcessInfo.processInfo.systemUptime < deadline else { throw failure("legacy writer inspection timed out") }
+            var descriptor = pollfd(fd: reader, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&descriptor, 1, 20)
+            if ready < 0, errno == EINTR { continue }
+            guard ready >= 0 else { throw failure("inspect legacy writers") }
+            if ready == 0 { continue }
+            let count = Darwin.read(reader, &buffer, buffer.count)
+            if count < 0, errno == EINTR || errno == EAGAIN { continue }
+            guard count >= 0 else { throw failure("read legacy writer inspection") }
+            if count == 0 { break }
+            guard result.count + count <= 64 * 1024 else { throw failure("too many legacy log holders") }
+            result.append(contentsOf: buffer.prefix(count))
+        }
+        // Read-only live windows can safely keep the archived inode; only
+        // writable (or unidentifiable) descriptors forbid offline migration.
+        var awaitingAccess = false
+        var sawDescriptor = false
+        var unsafe = false
+        for field in String(decoding: result, as: UTF8.self).split(separator: "\n") {
+            if field.hasPrefix("f") {
+                unsafe = unsafe || awaitingAccess
+                awaitingAccess = true
+                sawDescriptor = true
+            } else if field.hasPrefix("a") {
+                unsafe = unsafe || !awaitingAccess || field != "ar"
+                awaitingAccess = false
+            }
+        }
+        while process.isRunning, ProcessInfo.processInfo.systemUptime < deadline { usleep(1_000) }
+        guard !process.isRunning else { throw failure("legacy writer inspection timed out") }
         process.waitUntilExit()
-        pipe.fileHandleForReading.closeFile()
-        guard process.terminationStatus == 1, result.isEmpty else {
+        let noHolders = process.terminationStatus == 1 && result.isEmpty
+        let onlyReaders = process.terminationStatus == 0 && sawDescriptor && !awaitingAccess && !unsafe
+        guard noHolders || onlyReaders else {
             throw NSError(domain: "DSHLogWriter", code: 2,
-                          userInfo: [NSLocalizedDescriptionKey: "Existing logs are still open; stop the old log readers/writers before starting"])
+                          userInfo: [NSLocalizedDescriptionKey: "Existing logs may still have writers; stop the old log writers before starting"])
         }
     }
 
