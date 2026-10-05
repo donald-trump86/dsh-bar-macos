@@ -33,5 +33,42 @@ struct LogRotationChecks {
         assert(url("http://localhost:3080/?token=partial") == nil)
         assert(url("http://localhost:3080/\n") == nil)
         print("PASS Swift production constants and launch URL validation")
+        try checkRealLaunch()
+    }
+
+    static func checkRealLaunch() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("dsh-launch-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("fake-web")
+        let marker = directory.appendingPathComponent("spawned.pid")
+        let destination = directory.appendingPathComponent("pidfile")
+        // Ignore TERM to demand actual cleanup, not just sending one signal.
+        let script = "#!/bin/sh\ntrap '' TERM\necho $$ > '\(marker.path)'\nprintf 'http://127.0.0.1:3080/?token=launch-only\\n'\nexec /bin/sleep 60\n"
+        try script.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let service = LaunchHarness(log: directory.appendingPathComponent("logs/dsh-web.log"), marker: marker, destination: destination)
+        let (process, logger) = try service.launchProcess(path: executable.path, port: 3080)
+        assert(process.isRunning)
+        let storedPID = try String(contentsOf: destination, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        assert(storedPID == "\(process.processIdentifier)")
+        for _ in 0..<100 where logger.authenticatedURL == nil { usleep(10_000) }
+        assert(logger.authenticatedURL?.query == "token=launch-only")
+        kill(process.processIdentifier, SIGKILL)
+        process.waitUntilExit()
+        // The second start waits finitely for EOF and logger lock release.
+        try FileManager.default.removeItem(at: destination)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        try FileManager.default.removeItem(at: marker)
+        var refused = false
+        do { _ = try service.launchProcess(path: executable.path, port: 3080) }
+        catch { refused = true }
+        assert(refused, "PID persistence unexpectedly succeeded into a directory")
+        let failedPID = Int32(try String(contentsOf: marker, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines))!
+        for _ in 0..<100 where kill(failedPID, 0) == 0 { usleep(10_000) }
+        let survived = kill(failedPID, 0) == 0
+        if survived { kill(failedPID, SIGKILL) } // never leave the test's fake Web behind
+        assert(!survived, "PID-write failure left a TERM-ignoring untracked Web alive")
+        print("PASS real Web launch preserves PID/auth; post-spawn failure fully cleans up")
     }
 }

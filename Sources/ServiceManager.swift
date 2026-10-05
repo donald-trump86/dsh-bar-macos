@@ -63,7 +63,7 @@ final class ServiceManager {
     private var consecutiveProbeMisses = 0
     private let session: URLSession
     private var launchedProcess: Process?
-    private var launchedLogHandle: FileHandle?
+    private var launchedLogWriter: LogWriterProcess?
     private var authenticatedURL: URL?
     private var managedRecord: ManagedServiceRecord?
 
@@ -1065,8 +1065,7 @@ final class ServiceManager {
                 return
             }
             launchedProcess = nil
-            launchedLogHandle?.closeFile()
-            launchedLogHandle = nil
+            launchedLogWriter = nil
             authenticatedURL = nil
             clearManagedRecord()
             updateSnapshot {
@@ -1167,7 +1166,7 @@ final class ServiceManager {
             let version = self.readDshVersion(at: dshPath)
             do {
                 let launchedAt = Date()
-                let (process, logHandle, logOffset) = try self.launchProcess(path: dshPath, port: currentPort)
+                let (process, logger) = try self.launchProcess(path: dshPath, port: currentPort)
                 var finalProbe: ProbeResult = .unavailable
                 for _ in 0..<30 {
                     Thread.sleep(forTimeInterval: 0.5)
@@ -1175,14 +1174,11 @@ final class ServiceManager {
                     if finalProbe.isHarness { break }
                     if case .foreign = finalProbe, !process.isRunning { break }
                 }
-                let launchAuthenticatedURL = self.captureAuthenticatedURL(
-                    port: currentPort,
-                    fromLogOffset: logOffset
-                )
+                let launchAuthenticatedURL = logger.authenticatedURL
 
                 DispatchQueue.main.async {
                     self.launchedProcess = process
-                    self.launchedLogHandle = logHandle
+                    self.launchedLogWriter = logger
                     self.updateSnapshot {
                         $0.dshPath = dshPath
                         $0.dshVersion = version
@@ -1270,34 +1266,40 @@ final class ServiceManager {
         }
     }
 
-    private func launchProcess(path: String, port: Int) throws -> (Process, FileHandle, UInt64) {
-        let logURL = logFileURL
-        if !FileManager.default.fileExists(atPath: logURL.path) {
-            FileManager.default.createFile(
-                atPath: logURL.path,
-                contents: nil,
-                attributes: [.posixPermissions: 0o600]
-            )
-        }
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: logURL.path)
-        let logHandle = try FileHandle(forWritingTo: logURL)
-        let logOffset = logHandle.seekToEndOfFile()
-
+    private func launchProcess(path: String, port: Int) throws -> (Process, LogWriterProcess) {
+        let logger = try LogWriterProcess.start(logURL: logFileURL, port: port)
+        // Web owns its copied stdout/stderr descriptors after spawn; Bar must
+        // not keep a write end alive or prevent the logger from seeing EOF.
+        defer { logger.closeParentPipeHandles() }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = ["web", "--no-open"] + (port == 3080 ? [] : ["--port", "\(port)"])
         process.environment = Self.commandEnvironment()
-        process.standardOutput = logHandle
-        process.standardError = logHandle
-        try process.run()
-
-        try "\(process.processIdentifier)\n".write(
-            to: pidFileURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pidFileURL.path)
-        return (process, logHandle, logOffset)
+        process.standardOutput = logger.outputHandle
+        process.standardError = logger.outputHandle
+        do {
+            try process.run()
+            try "\(process.processIdentifier)\n".write(
+                to: pidFileURL,
+                atomically: true,
+                encoding: .utf8
+            )
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pidFileURL.path)
+            return (process, logger)
+        } catch {
+            // A failed PID write must not leave an untracked service running,
+            // even if this newly spawned Web ignores graceful termination.
+            if process.isRunning {
+                process.terminate()
+                let deadline = ProcessInfo.processInfo.systemUptime + 2
+                while process.isRunning, ProcessInfo.processInfo.systemUptime < deadline {
+                    Thread.sleep(forTimeInterval: 0.02)
+                }
+                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                process.waitUntilExit()
+            }
+            throw error
+        }
     }
 
     private func runStopScript(port: Int) -> StopResult {
@@ -1370,8 +1372,7 @@ final class ServiceManager {
             completion(false, message)
         default:
             launchedProcess = nil
-            launchedLogHandle?.closeFile()
-            launchedLogHandle = nil
+            launchedLogWriter = nil
             authenticatedURL = nil
             // Drop the persisted identity too, so a later launch never probes or
             // claims a port that this app has already released.
@@ -1638,59 +1639,6 @@ final class ServiceManager {
         // Only the token captured from this app's own launch is trusted. A
         // token mined from historical log text could belong to a dead process.
         NSWorkspace.shared.open(authenticatedURL ?? baseUrl)
-    }
-
-    /// DSH prints a process-token URL when it starts with `--no-open`. Only the
-    /// bytes appended by *this* launch are scanned, and the token is kept in
-    /// memory — it is never shown in the UI, the clipboard, or written elsewhere.
-    private func captureAuthenticatedURL(port: Int, fromLogOffset offset: UInt64) -> URL? {
-        Self.extractAuthenticatedURL(port: port, fromLogOffset: offset)
-    }
-
-    private static func extractAuthenticatedURL(port: Int, fromLogOffset offset: UInt64) -> URL? {
-        let url = ServiceManager.shared.logFileURL
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let sizeValue = attributes[.size] as? NSNumber,
-              let handle = try? FileHandle(forReadingFrom: url) else {
-            return nil
-        }
-
-        let size = sizeValue.uint64Value
-        // If the file was rotated or truncated, only the current tail is usable.
-        let start = size >= offset ? offset : (size > 131_072 ? size - 131_072 : 0)
-        handle.seek(toFileOffset: start)
-        let data = handle.readDataToEndOfFile()
-        handle.closeFile()
-        var text = String(decoding: data, as: UTF8.self)
-        if let ansiRegex = try? NSRegularExpression(pattern: "\\u001B\\[[0-9;]*[A-Za-z]") {
-            text = ansiRegex.stringByReplacingMatches(
-                in: text,
-                range: NSRange(text.startIndex..., in: text),
-                withTemplate: ""
-            )
-        }
-
-        let pattern = "https?://(?:127\\.0\\.0\\.1|localhost):\(port)[^\\s\\\"']*"
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
-            return nil
-        }
-        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
-        var cleanFallback: URL?
-        for match in matches.reversed() {
-            guard let range = Range(match.range, in: text),
-                  let candidate = URL(string: String(text[range])),
-                  let components = URLComponents(url: candidate, resolvingAgainstBaseURL: false),
-                  components.port == port,
-                  let host = components.host?.lowercased(),
-                  host == "127.0.0.1" || host == "localhost" else {
-                continue
-            }
-            if components.query != nil {
-                return candidate
-            }
-            cleanFallback = cleanFallback ?? candidate
-        }
-        return cleanFallback
     }
 
     /// Replaces the process token in log text so the exported/shared view never
