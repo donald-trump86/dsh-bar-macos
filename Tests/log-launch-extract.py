@@ -25,6 +25,12 @@ window = (repo / "Sources/LogWindow.swift").read_text()
 assert "LogFileIdentity.read(from: handle)" in window and "self.readIdentity = identity" in window
 assert "previous: previousIdentity, current: identity" in window
 assert "readDataToEndOfFile()" not in window and "generation == self.fillGeneration" in window
+assert "logText.append(data, redacting: ServiceManager.redactingProcessTokens)" in window
+assert "self.logText.reset(discardPartialLine: startsMidLine)" in window
+assert "let visible = logText.text" in window and "rawText" not in window
+redactor_start = source.index("    static func redactingProcessTokens(")
+redactor_end = source.index("\n    func revealLogFile(", redactor_start)
+redactor = source[redactor_start:redactor_end]
 header = r'''import Foundation
 import Darwin
 final class LaunchHarness {
@@ -42,4 +48,4 @@ final class LaunchHarness {
     }
     static func commandEnvironment() -> [String: String] { ProcessInfo.processInfo.environment }
 '''
-Path(sys.argv[1]).write_text(header + method + "\n}\n")
+Path(sys.argv[1]).write_text(header + method + "\n" + redactor + "\n}\n")

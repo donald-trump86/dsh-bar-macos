@@ -25,12 +25,11 @@ final class LogWindowController: NSWindowController, NSWindowDelegate, NSSearchF
     private var refreshTimer: Timer?
     private var readOffset: UInt64 = 0
     private var readIdentity: LogFileIdentity?
-    private var rawText = ""
+    private var logText = LogTextBuffer()
     private var isPaused = false
     private var readInFlight = false
     private var fillGeneration = 0
     private let ioQueue = DispatchQueue(label: "ai.deepseek.dsh-bar.log-reader", qos: .utility)
-    private let maximumBufferedCharacters = 1_000_000
 
     init() {
         let window = LogPanelWindow(
@@ -221,11 +220,16 @@ final class LogWindowController: NSWindowController, NSWindowDelegate, NSSearchF
             let identity: LogFileIdentity
             let size: UInt64
             let effectiveOffset: UInt64
+            let resetsLine: Bool
+            let startsMidLine: Bool
             let data: Data
             do {
                 (identity, size) = try LogFileIdentity.read(from: handle)
                 effectiveOffset = LogFileIdentity.readOffset(size: size, offset: offset,
                                                             previous: previousIdentity, current: identity)
+                resetsLine = previousIdentity != identity || effectiveOffset != offset
+                startsMidLine = resetsLine
+                    ? try LogTextBuffer.startsMidLine(handle: handle, offset: effectiveOffset) : false
                 try handle.seek(toOffset: effectiveOffset)
                 // Snapshot size and a fixed cap prevent a rapidly growing legacy
                 // log from making read-to-EOF unbounded while we follow it.
@@ -239,7 +243,6 @@ final class LogWindowController: NSWindowController, NSWindowDelegate, NSSearchF
                 return
             }
             let nextOffset = effectiveOffset + UInt64(data.count)
-            let chunk = String(decoding: data, as: UTF8.self)
 
             DispatchQueue.main.async {
                 self.readInFlight = false
@@ -248,11 +251,11 @@ final class LogWindowController: NSWindowController, NSWindowDelegate, NSSearchF
                 guard generation == self.fillGeneration else { return }
                 self.readOffset = nextOffset
                 self.readIdentity = identity
-                if !chunk.isEmpty {
-                    self.rawText.append(chunk)
-                    if self.rawText.count > self.maximumBufferedCharacters {
-                        self.rawText = String(self.rawText.suffix(self.maximumBufferedCharacters))
-                    }
+                if resetsLine {
+                    self.logText.reset(discardPartialLine: startsMidLine)
+                }
+                if !data.isEmpty {
+                    self.logText.append(data, redacting: ServiceManager.redactingProcessTokens)
                     self.renderText(scrollToBottom: true)
                 }
                 self.statusLabel.stringValue = "\(url.path)  •  \(Self.formatBytes(size))"
@@ -261,9 +264,8 @@ final class LogWindowController: NSWindowController, NSWindowDelegate, NSSearchF
     }
 
     private func renderText(scrollToBottom: Bool) {
-        // Process tokens live in the log text; redact before display so the
-        // window (and anything copied from it) never leaks credentials.
-        let visible = ServiceManager.redactingProcessTokens(in: rawText)
+        // The buffer contains only complete lines redacted before any trimming.
+        let visible = logText.text
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if query.isEmpty {
             textView.string = visible
@@ -294,12 +296,14 @@ final class LogWindowController: NSWindowController, NSWindowDelegate, NSSearchF
 
     @objc private func clearView() {
         fillGeneration += 1
-        rawText = ""
+        logText = LogTextBuffer()
         if let handle = try? FileHandle(forReadingFrom: ServiceManager.shared.logFileURL) {
             defer { try? handle.close() }
             if let (identity, size) = try? LogFileIdentity.read(from: handle) {
                 readIdentity = identity
                 readOffset = size
+                let startsMidLine = (try? LogTextBuffer.startsMidLine(handle: handle, offset: size)) ?? true
+                logText.reset(discardPartialLine: startsMidLine)
             } else {
                 readIdentity = nil
                 readOffset = 0

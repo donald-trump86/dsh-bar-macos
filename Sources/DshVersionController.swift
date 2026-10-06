@@ -223,18 +223,33 @@ final class DshVersionController {
         process.standardError = pipe
 
         DispatchQueue.global(qos: .utility).async {
+            defer {
+                pipe.fileHandleForReading.closeFile()
+                pipe.fileHandleForWriting.closeFile()
+            }
             var failure: DshVersionControllerError?
             do {
                 try process.run()
+                // Only npm owns the write end now, so its exit produces EOF.
+                pipe.fileHandleForWriting.closeFile()
+                // Drain while npm runs: waiting first can fill the pipe and
+                // block npm forever. Keep only the final 64 KiB of diagnostics.
+                let outputLimit = 64 * 1024
+                var output = Data()
+                while true {
+                    let chunk = pipe.fileHandleForReading.readData(ofLength: 8192)
+                    if chunk.isEmpty { break }
+                    output.append(chunk)
+                    if output.count > outputLimit {
+                        output.removeFirst(output.count - outputLimit)
+                    }
+                }
                 process.waitUntilExit()
                 if process.terminationStatus != 0 {
-                    let output = String(
-                        data: pipe.fileHandleForReading.readDataToEndOfFile(),
-                        encoding: .utf8
-                    ) ?? ""
                     failure = .installFailed(
                         exitCode: process.terminationStatus,
-                        output: output.trimmingCharacters(in: .whitespacesAndNewlines)
+                        output: String(decoding: output, as: UTF8.self)
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
                     )
                 }
             } catch {

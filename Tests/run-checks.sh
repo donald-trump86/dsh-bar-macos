@@ -140,4 +140,16 @@ else
     fail "log rotation check failed — run bash $SCRIPT_DIR/log-rotation-check.sh to see why"
 fi
 
+# 10. Preserve owned identity across HTTP outages and keep npm pipes draining.
+if python3 "$SCRIPT_DIR/service-identity-check.py"; then
+    pass "managed service identity survives inconclusive HTTP probes"
+else
+    fail "service identity check failed — run python3 $SCRIPT_DIR/service-identity-check.py to see why"
+fi
+if python3 "$SCRIPT_DIR/install-pipe-check.py"; then
+    pass "npm output is drained with bounded diagnostics and install state cleanup"
+else
+    fail "install pipe check failed — run python3 $SCRIPT_DIR/install-pipe-check.py to see why"
+fi
+
 exit $FAILED

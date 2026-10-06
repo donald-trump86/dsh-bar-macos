@@ -70,7 +70,7 @@ xattr -cr "/Applications/DeepSeek Harness Bar.app"
 - 🧯 **通知失效时有降级路径**：ad-hoc 签名的应用每次重建都可能丢失通知授权，所以面板会用橙色显示通知的真实状态和原因，并提供"Fix…"；崩溃与恢复的提示会保留在面板和菜单栏提示里，不依赖通知送达。
 - 🌏 **简体中文界面**：偏好设置里可切换 **自动 / English / 简体中文**，切换后**立即生效、无需重启**（面板、菜单栏、日志窗口同时跟随）。
 - 🌐 **显式打开 Web**：只有点击 Open Web 或使用其全局热键时才打开浏览器，并使用本次启动捕获的认证 URL（token 只留在内存中）。
-- 📜 **内置实时日志**：直接在应用中跟踪 `~/.dsh/logs/dsh-web.log`，支持暂停、搜索、清空当前视图和在 Finder 中定位；显示时会自动隐藏 URL 中的进程 token。
+- 📜 **内置实时日志**：直接在应用中跟踪 `~/.dsh/logs/dsh-web.log`，支持暂停、搜索、清空当前视图和在 Finder 中定位；只显示完整换行且已隐藏 URL 查询凭证的日志，行首边界不明的首行、未完成行和超长行会保守隐藏。
 - 🗂️ **日志不会无限增长**：由 Bar 新启动的服务通过独立后台写入进程轮转日志；当前文件最多 **10 MiB**，另保留 `.1`、`.2` 两份历史，合计最多 **30 MiB**。即使退出 Bar、保留 Web，仍会轮转；停止 Web 后会排空日志并退出写入进程。升级前已运行的旧服务需要停止后由新版重新启动，才能启用限额；不要直接删除或截断仍有旧进程写入的大日志。
 - 🔎 **DSH 自动检测**：通过 `which dsh` 检测路径和版本，未安装时提供 npm 安装引导。
 - 🪟 **偏好设置面板（`⌘,`）**：
@@ -127,8 +127,8 @@ xattr -cr "/Applications/DeepSeek Harness Bar.app"
 发布前可在本地复现同样的产物：
 
 ```bash
-VERSION=0.1.5 ./build.sh          # 通用二进制 + ad-hoc 签名
-VERSION=0.1.5 SIGNING_IDENTITY="Developer ID Application: …" ./build.sh
+VERSION=0.1.6 ./build.sh          # 通用二进制 + ad-hoc 签名
+VERSION=0.1.6 SIGNING_IDENTITY="Developer ID Application: …" ./build.sh
 ```
 
 ### 方式二：从源码编译并安装
@@ -172,6 +172,7 @@ dsh-bar-macos/
 │   ├── SettingsManager.swift   # 端口、开机启动 (SMAppService)、热键持久化
 │   ├── DashboardWindow.swift   # 毛玻璃偏好设置面板
 │   ├── LogWindow.swift         # 内置实时日志窗口
+│   ├── LogTextBuffer.swift      # 跨读取完整行脱敏、残片隐藏与字节限额
 │   ├── DshInstallAssistant.swift # DSH/npm 安装引导
 │   ├── DshVersionController.swift # npm dist-tag 探测与按 tag 安装 dsh
 │   ├── ExternalServicePrompt.swift # 结束外部启动服务的确认弹窗

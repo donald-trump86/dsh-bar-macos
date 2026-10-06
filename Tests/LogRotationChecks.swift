@@ -35,6 +35,134 @@ struct LogRotationChecks {
         print("PASS Swift production constants and launch URL validation")
         try checkRealLaunch()
         try checkFileIdentity()
+        try checkLogTextBuffer()
+        try checkByteRotationRedaction()
+    }
+
+    static func checkLogTextBuffer() throws {
+        let redact = LaunchHarness.redactingProcessTokens
+        let token = "synthetic-secret-fragment"
+        let urls = [
+            "http://127.0.0.1:3080/?token=\(token)",
+            "http://localhost:3080/ui?token=\(token)",
+            "http://localhost:3080?token=\(token)",
+            "HTTP://LOCALHOST:3080/nested/ui?x=1&token=\(token)"
+        ]
+        for url in urls {
+            assert(RotatingLogWriter.authenticatedURL(in: url + "\n", port: 3080) != nil)
+            let line = "ready \(url)\n"
+            let bytes = Data(line.utf8)
+            let expected = redact(line)
+            assert(!expected.contains(token) && expected.contains("<redacted>"))
+            // Every possible two-read boundary, including inside scheme/query/token.
+            for split in 0..<bytes.count {
+                var buffer = LogTextBuffer()
+                buffer.append(bytes.prefix(split), redacting: redact)
+                assert(buffer.text.isEmpty, "incomplete line became visible")
+                buffer.append(bytes.suffix(bytes.count - split), redacting: redact)
+                assert(buffer.text == expected)
+            }
+            var tiny = LogTextBuffer(maximumBufferedBytes: 12)
+            tiny.append(bytes, redacting: redact)
+            assert(tiny.text.utf8.count <= 12 && !tiny.text.contains("fragment"))
+        }
+        let unicodeLine = "中文🙂e\u{301}\n"
+        let unicode = Data(unicodeLine.utf8)
+        for split in 0..<unicode.count {
+            var buffer = LogTextBuffer()
+            buffer.append(unicode.prefix(split), redacting: redact)
+            buffer.append(unicode.suffix(unicode.count - split), redacting: redact)
+            assert(buffer.text == unicodeLine, "split UTF-8 scalar was corrupted")
+        }
+        var partial = LogTextBuffer()
+        partial.reset(discardPartialLine: true)
+        partial.append(Data("secret-fragment".utf8), redacting: redact)
+        assert(partial.text.isEmpty)
+        partial.append(Data("-continued\nsafe\n".utf8), redacting: redact)
+        assert(partial.text == "safe\n", "tail fragment leaked")
+        partial.append(Data("http://localhost:3080/?token=unfinished".utf8), redacting: redact)
+        partial.reset(discardPartialLine: false)
+        partial.append(Data("rotated\n".utf8), redacting: redact)
+        assert(partial.text == "safe\nrotated\n", "rotation joined unrelated fragments")
+        var oversized = LogTextBuffer(maximumLineBytes: 16)
+        oversized.append(Data(repeating: 97, count: 17), redacting: redact)
+        oversized.append(Data("secret-fragment\nsafe\n".utf8), redacting: redact)
+        assert(oversized.text == "safe\n", "oversized line suffix leaked")
+        var bounded = LogTextBuffer(maximumBufferedBytes: 64)
+        for _ in 0..<8 {
+            bounded.append(Data((String(repeating: "\u{301}", count: 1024) + "\n").utf8), redacting: redact)
+            assert(bounded.text.utf8.count <= 64 && !bounded.text.contains("\u{FFFD}"))
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("dsh-log-text-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("boundaries")
+        try Data("line\npartial".utf8).write(to: path)
+        let handle = try FileHandle(forReadingFrom: path)
+        defer { try? handle.close() }
+        let fromBeginning = try LogTextBuffer.startsMidLine(handle: handle, offset: 0)
+        let afterNewline = try LogTextBuffer.startsMidLine(handle: handle, offset: 5)
+        let midLine = try LogTextBuffer.startsMidLine(handle: handle, offset: 6)
+        let atEOF = try LogTextBuffer.startsMidLine(handle: handle, offset: 12)
+        assert(fromBeginning && !afterNewline && midLine && atEOF)
+        print("PASS redaction before byte trimming; split URLs/UTF-8, tail/Clear/rotation and oversized lines")
+    }
+
+    static func checkByteRotationRedaction() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        let directory = temporaryRoot.appendingPathComponent("dsh-byte-redaction-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            precondition(directory.resolvingSymlinksInPath().path == directory.path
+                         && directory.deletingLastPathComponent().path == temporaryRoot.path)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let path = directory.appendingPathComponent("current")
+        let process = Process()
+        let input = Pipe()
+        process.executableURL = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
+        process.arguments = ["--internal-log-writer", path.path, "3080"]
+        process.standardInput = input
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        input.fileHandleForReading.closeFile()
+        defer {
+            input.fileHandleForWriting.closeFile()
+            if process.isRunning { process.terminate(); process.waitUntilExit() }
+        }
+        let prefix = Data("http://localhost:3080/ui?token=synthetic-".utf8)
+        var padding = Data(repeating: 97, count: RotatingLogWriter.maximumFileBytes - prefix.count - 1)
+        padding.append(10)
+        try input.fileHandleForWriting.write(contentsOf: padding)
+        try input.fileHandleForWriting.write(contentsOf: prefix)
+        let continuation = Data("secret-suffix\nsafe\n".utf8)
+        try input.fileHandleForWriting.write(contentsOf: continuation)
+        input.fileHandleForWriting.closeFile()
+        process.waitUntilExit()
+        assert(process.terminationStatus == 0)
+        let archive = try FileHandle(forReadingFrom: URL(fileURLWithPath: path.path + ".1"))
+        defer { try? archive.close() }
+        let (oldIdentity, oldSize) = try LogFileIdentity.read(from: archive)
+        assert(oldSize == UInt64(RotatingLogWriter.maximumFileBytes))
+        let current = try FileHandle(forReadingFrom: path)
+        defer { try? current.close() }
+        let (identity, size) = try LogFileIdentity.read(from: current)
+        assert(identity != oldIdentity && size == UInt64(continuation.count))
+        // Both opening the window and following rotation see a small file at zero.
+        for previous: LogFileIdentity? in [nil, oldIdentity] {
+            let offset = LogFileIdentity.readOffset(size: size, offset: oldSize,
+                                                   previous: previous, current: identity)
+            assert(offset == 0)
+            var buffer = LogTextBuffer()
+            buffer.append(prefix, redacting: LaunchHarness.redactingProcessTokens)
+            buffer.reset(discardPartialLine: try LogTextBuffer.startsMidLine(handle: current, offset: offset))
+            try current.seek(toOffset: offset)
+            buffer.append(try current.read(upToCount: 512 * 1024) ?? Data(),
+                          redacting: LaunchHarness.redactingProcessTokens)
+            assert(buffer.text == "safe\n", "byte rotation exposed a zero-offset token suffix")
+        }
+        print("PASS actual byte rotation inside token hides zero-offset fragments on open and follow")
     }
 
     static func checkFileIdentity() throws {

@@ -379,7 +379,7 @@ final class ServiceManager {
         guard isPortListening(port) else { return .unavailable }
 
         guard let url = URL(string: "http://127.0.0.1:\(port)") else {
-            return .unavailable
+            return .foreign(pid: nil)
         }
 
         var request = URLRequest(url: url)
@@ -413,37 +413,29 @@ final class ServiceManager {
             return .foreign(pid: listenerPID)
         }
 
-        if listenerPID != nil {
-            return .foreign(pid: listenerPID)
+        // TCP accepted the connection. An HTTP timeout or missing lsof PID
+        // cannot make that occupied port safe for a new launch.
+        return .foreign(pid: listenerPID)
+    }
+
+    /// Health and ownership are independent: keep a previously verified record
+    /// through inconclusive observations, but only claim management on a match.
+    private func matchesManagedIdentity(pid: Int32?, startedAt: Date?, port: Int) -> Bool {
+        guard let record = managedRecord, record.port == port, let pid else { return false }
+        if record.pid != pid || startedAt.map({ abs($0.timeIntervalSince(record.startedAt)) >= 5 }) == true {
+            clearManagedRecord()
+            authenticatedURL = nil
+            return false
         }
-        return .unavailable
+        return startedAt != nil
     }
 
     private func applyProbe(_ result: ProbeResult, port: Int) {
         switch result {
         case let .harness(pid, startedAt):
             consecutiveProbeMisses = 0
-            let previousPID = snapshot.pid
-            var isManaged = false
-            // Only ever discard the record on *conclusive* evidence that the
-            // listener is not ours. `startedAt` comes from `ps`, which can fail
-            // transiently; treating that as "not ours" would silently demote a
-            // healthy managed service to external and erase its identity. The
-            // destructive paths re-verify independently anyway, so being
-            // conservative here costs nothing.
-            if let record = managedRecord, record.port == port {
-                if record.pid == pid {
-                    if let startedAt, abs(startedAt.timeIntervalSince(record.startedAt)) >= 5 {
-                        // Measured start time disagrees: the PID was reused.
-                        clearManagedRecord()
-                    } else {
-                        isManaged = true
-                    }
-                } else {
-                    clearManagedRecord()
-                }
-            }
-            if previousPID != pid {
+            let isManaged = matchesManagedIdentity(pid: pid, startedAt: startedAt, port: port)
+            if managedRecord?.port != port {
                 authenticatedURL = nil
             }
             updateSnapshot {
@@ -456,9 +448,11 @@ final class ServiceManager {
             }
         case let .foreign(pid):
             consecutiveProbeMisses = 0
-            authenticatedURL = nil
             if managedRecord?.port == port {
-                clearManagedRecord()
+                _ = matchesManagedIdentity(pid: pid, startedAt: pid.flatMap(processStartDate), port: port)
+            }
+            if managedRecord?.port != port {
+                authenticatedURL = nil
             }
             updateSnapshot {
                 $0.phase = .portConflict
@@ -481,7 +475,7 @@ final class ServiceManager {
             // started counts as a crash.
             let ownedByUs = managedRecord?.port == port
             let wasIntentional = intentionalStopInFlight
-            let lostPID = snapshot.pid
+            let lostPID = snapshot.pid ?? managedRecord?.pid
             if ownedByUs {
                 clearManagedRecord()
             }
@@ -705,7 +699,6 @@ final class ServiceManager {
             ServiceNotifier.shared.requestAuthorizationIfNeeded()
             acknowledgeUnexpectedExit()
         }
-        authenticatedURL = nil
         updateSnapshot {
             $0.phase = .starting
             $0.message = nil
@@ -811,26 +804,28 @@ final class ServiceManager {
 
             let stopResult = self.runStopScript(port: currentPort)
             if case let .failed(reason) = stopResult {
+                let failedProbe = self.probe(port: currentPort)
                 DispatchQueue.main.async {
                     let message = reason.isEmpty ? L(.failedToStopExisting) : reason
-                    self.authenticatedURL = previousAuthenticatedURL
-                    self.updateSnapshot {
-                        $0 = previousSnapshot
-                        $0.message = message
+                    self.applyProbe(failedProbe, port: currentPort)
+                    if self.managedRecord?.port == currentPort {
+                        self.authenticatedURL = previousAuthenticatedURL
                     }
+                    self.updateSnapshot { $0.message = message }
                     finish(false, message)
                 }
                 return
             }
             if case .foreign = stopResult {
+                let foreignProbe = self.probe(port: currentPort)
                 DispatchQueue.main.async {
-                    let message = L(.listenerNoLongerMatches, ["port": "\(currentPort)"])
-                    self.clearManagedRecord()
-                    self.updateSnapshot {
-                        $0.phase = .portConflict
-                        $0.message = message
-                        $0.isManaged = false
+                    self.applyProbe(foreignProbe, port: currentPort)
+                    if self.managedRecord?.port == currentPort {
+                        self.authenticatedURL = previousAuthenticatedURL
                     }
+                    let message = self.snapshot.isManaged ? L(.failedToStopExisting)
+                        : L(.listenerNoLongerMatches, ["port": "\(currentPort)"])
+                    self.updateSnapshot { $0.message = message }
                     finish(false, message)
                 }
                 return
@@ -841,11 +836,13 @@ final class ServiceManager {
             guard case .unavailable = stoppedProbe else {
                 DispatchQueue.main.async {
                     let message = L(.oldStillListening, ["port": "\(currentPort)"])
-                    self.authenticatedURL = previousAuthenticatedURL
-                    self.updateSnapshot {
-                        $0 = previousSnapshot
-                        $0.message = message
+                    // A refused restart must reflect the listener we observed,
+                    // not resurrect the pre-stop snapshot's ownership proof.
+                    self.applyProbe(stoppedProbe, port: currentPort)
+                    if self.managedRecord?.port == currentPort {
+                        self.authenticatedURL = previousAuthenticatedURL
                     }
+                    self.updateSnapshot { $0.message = message }
                     finish(false, message)
                 }
                 return
@@ -1163,6 +1160,16 @@ final class ServiceManager {
                 return
             }
 
+            let existingProbe = self.probe(port: currentPort)
+            guard case .unavailable = existingProbe else {
+                DispatchQueue.main.async {
+                    self.applyProbe(existingProbe, port: currentPort)
+                    completion(false, self.snapshot.message ?? L(.portAlreadyInUse, ["port": "\(currentPort)"]))
+                }
+                return
+            }
+            // Only discard the old URL when it is safe to attempt a new launch.
+            DispatchQueue.main.async { self.authenticatedURL = nil }
             let version = self.readDshVersion(at: dshPath)
             do {
                 let launchedAt = Date()
@@ -1353,6 +1360,7 @@ final class ServiceManager {
     ) {
         switch (result, probe) {
         case (_, .harness):
+            applyProbe(probe, port: port)
             let message = L(.stillResponding, ["port": "\(port)"])
             updateSnapshot {
                 $0.phase = .error
@@ -1360,9 +1368,14 @@ final class ServiceManager {
             }
             completion(false, message)
         case (.foreign, _), (_, .foreign):
+            if case .foreign = probe {
+                // A failed HTTP probe is not proof that the owned process left.
+                applyProbe(probe, port: port)
+                completion(false, snapshot.message)
+                return
+            }
             let message = L(.portUsedByAnotherApp, ["port": "\(port)"])
-            // The recorded process is gone or no longer owns the port, so the
-            // stored identity must not survive to a future launch.
+            authenticatedURL = nil
             clearManagedRecord()
             updateSnapshot {
                 $0.phase = .portConflict
@@ -1644,18 +1657,25 @@ final class ServiceManager {
     // MARK: - User Actions
 
     func openBrowser() {
-        // Only the token captured from this app's own launch is trusted. A
-        // token mined from historical log text could belong to a dead process.
-        let currentLaunchURL = snapshot.isManaged && snapshot.pid == launchedProcess?.processIdentifier
+        // Retained credentials are private until health and identity match again.
+        guard snapshot.isRunning, snapshot.isManaged, let record = managedRecord,
+              record.port == snapshot.port, record.pid == snapshot.pid,
+              let startedAt = snapshot.startedAt,
+              abs(startedAt.timeIntervalSince(record.startedAt)) < 5 else {
+            NSWorkspace.shared.open(baseUrl)
+            return
+        }
+        let currentLaunchURL = snapshot.pid == launchedProcess?.processIdentifier
             ? launchedLogWriter?.authenticatedURL : nil
-        NSWorkspace.shared.open(authenticatedURL ?? currentLaunchURL ?? baseUrl)
+        let url = authenticatedURL ?? currentLaunchURL ?? baseUrl
+        NSWorkspace.shared.open(url.port == snapshot.port ? url : baseUrl)
     }
 
     /// Replaces the process token in log text so the exported/shared view never
     /// leaks it. Used by the live log window and the log redaction preview.
     static func redactingProcessTokens(in text: String) -> String {
         guard let regex = try? NSRegularExpression(
-            pattern: "(https?://(?:127\\.0\\.0\\.1|localhost):[0-9]+/)[?][^\\s\\\"']*",
+            pattern: "(https?://(?:127\\.0\\.0\\.1|localhost):[0-9]+(?:/[^\\s\\\"'?#]*)?)[?][^\\s\\\"']*",
             options: [.caseInsensitive]
         ) else {
             return text

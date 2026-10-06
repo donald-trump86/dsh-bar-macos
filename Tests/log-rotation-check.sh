@@ -10,7 +10,8 @@ cleanup() {
 trap cleanup EXIT
 python3 "$REPO/Tests/log-launch-extract.py" "$CACHE/LaunchHarness.swift"
 swiftc -Onone -parse-as-library -module-cache-path "$CACHE/modulecache" \
-    "$REPO/Sources/RotatingLogWriter.swift" "$CACHE/LaunchHarness.swift" "$REPO/Tests/LogRotationChecks.swift" \
+    "$REPO/Sources/RotatingLogWriter.swift" "$REPO/Sources/LogTextBuffer.swift" \
+    "$CACHE/LaunchHarness.swift" "$REPO/Tests/LogRotationChecks.swift" \
     -o "$CACHE/log-check"
 "$CACHE/log-check"
 python3 "$REPO/Tests/log-rotation-process-check.py" "$CACHE/log-check"
