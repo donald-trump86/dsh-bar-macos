@@ -9,6 +9,21 @@ import sys
 from typing import Dict, List, Optional, Tuple
 
 
+def strip_comments(text: str) -> str:
+    """Strip single-line and multi-line comments while preserving string literals."""
+    pattern = re.compile(
+        r'(?P<single>//[^\n]*)|(?P<multi>/\*.*?\*/)|(?P<string>"(?:\\.|[^"\\])*")',
+        re.DOTALL,
+    )
+
+    def replacer(match: re.Match) -> str:
+        if match.group("single") or match.group("multi"):
+            return " "
+        return match.group("string")
+
+    return pattern.sub(replacer, text)
+
+
 def parse_table_for_lang(lang: str, source: str) -> Optional[Dict[str, str]]:
     """Extract key-value pairs for a language table."""
     match = re.search(
@@ -18,7 +33,8 @@ def parse_table_for_lang(lang: str, source: str) -> Optional[Dict[str, str]]:
     )
     if not match:
         return None
-    entries = re.findall(r'\.(\w+):\s*"((?:[^"\\]|\\.)*)"', match.group(1))
+    cleaned = strip_comments(match.group(1))
+    entries = re.findall(r'\.(\w+):\s*"((?:[^"\\]|\\.)*)"', cleaned)
     return dict(entries)
 
 
@@ -170,6 +186,48 @@ def run_self_tests() -> None:
     # 7. Malformed tables return None
     src_malformed = 'let somethingElse = 123'
     assert parse_tables(src_malformed) is None, "Malformed table should return None"
+
+    # 8. Single-line commented out entry (//) is ignored and reported missing
+    src_commented_single = '''
+    static let english: [Key: String] = [
+        .runningPort: "RUNNING : {port}"
+    ]
+    static let chinese: [Key: String] = [
+        // .runningPort: "运行中 : {port}"
+    ]
+    '''
+    en_d, zh_d = parse_tables(src_commented_single)
+    errs = check_tables(en_d, zh_d)
+    assert any("English-only keys: runningPort" in e for e in errs), f"Expected missing key error for // comment, got: {errs}"
+
+    # 9. Multi-line commented out entry (/* ... */) is ignored and reported missing
+    src_commented_multi = '''
+    static let english: [Key: String] = [
+        .runningPort: "RUNNING : {port}"
+    ]
+    static let chinese: [Key: String] = [
+        /* .runningPort: "运行中 : {port}" */
+    ]
+    '''
+    en_d, zh_d = parse_tables(src_commented_multi)
+    errs = check_tables(en_d, zh_d)
+    assert any("English-only keys: runningPort" in e for e in errs), f"Expected missing key error for /* */ comment, got: {errs}"
+
+    # 10. String literal containing comment tokens is preserved
+    src_string_with_comment_tokens = '''
+    static let english: [Key: String] = [
+        .url: "https://example.com//test/*not comment*/ {var}"
+    ]
+    static let chinese: [Key: String] = [
+        .url: "https://example.com//test/*not comment*/ {var}"
+    ]
+    '''
+    parsed = parse_tables(src_string_with_comment_tokens)
+    assert parsed is not None
+    en_d, zh_d = parsed
+    assert en_d.get("url") == "https://example.com//test/*not comment*/ {var}"
+    assert zh_d.get("url") == "https://example.com//test/*not comment*/ {var}"
+    assert check_tables(en_d, zh_d) == []
 
     print("PASS localization-check synthetic self-tests")
 
