@@ -25,7 +25,7 @@ Three failure modes that review does not catch and the compiler does not either:
 
 | Check | Catches |
 | :--- | :--- |
-| Translation key alignment | A `Key` added to one language table but not the other. The UI silently falls back to English — no error, no warning. |
+| Translation key & placeholder alignment | A `Key` added to one language table but not the other, or mismatched `{name}` placeholders. |
 | `APP_NAME` vs `CFBundleName` | Renaming the app in one file only. The built bundle and the documented path drift apart. |
 | README `.app` paths | A path in the docs that no longer resolves after a rename. |
 
@@ -48,8 +48,8 @@ private static let chinese: [Key: String] = [
 ]
 ```
 
-`make check` fails if the two key sets differ. It does not check the
-placeholders, so a `"{port}"` dropped from one side still ships.
+`make check` fails if the two key sets differ or if interpolation
+placeholders (such as `"{port}"`) do not match across translations.
 
 ## Naming
 
