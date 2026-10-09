@@ -37,37 +37,17 @@ while IFS= read -r path; do
     fi
 done < <(grep -oE '"[^"]+\.app"' README.md | tr -d '"' | sort -u)
 
-# 3. Translation keys must exist in both tables. A key added to one language
-#    only falls back to English silently.
+# 3. Translation keys and placeholders must align across languages.
+#    A missing key falls back to English silently; a dropped placeholder
+#    leaves template variables un-interpolated or drops values at runtime.
 if command -v python3 >/dev/null 2>&1; then
-    if python3 - <<'PY'
-import re, sys
-
-source = open("Sources/Localization.swift", encoding="utf-8").read()
-# The two tables are `private static let english/chinese: [Key: String] = [ … ]`.
-tables = re.findall(
-    r'static let (?:english|chinese):\s*\[Key:\s*String\]\s*=\s*\[(.*?)\n    \]',
-    source,
-    re.S,
-)
-if len(tables) < 2:
-    print("    could not locate both translation tables")
-    sys.exit(2)
-
-keys = [set(re.findall(r'\.(\w+):', table)) for table in tables]
-en_only, zh_only = keys[0] - keys[1], keys[1] - keys[0]
-for name, missing in (("English-only", en_only), ("Chinese-only", zh_only)):
-    if missing:
-        print(f"    {name} keys: {', '.join(sorted(missing))}")
-sys.exit(1 if (en_only or zh_only) else 0)
-PY
-    then
-        pass "translation keys align across both languages"
+    if python3 "$SCRIPT_DIR/localization-check.py"; then
+        pass "translation keys and placeholders align across both languages"
     else
-        fail "translation keys are out of sync (see above)"
+        fail "translation keys or placeholders are out of sync (see above)"
     fi
 else
-    echo "SKIP  translation key alignment (python3 not found)"
+    echo "SKIP  translation key and placeholder alignment (python3 not found)"
 fi
 
 # 4. The polling gate is the app's whole idle path: one wrong answer shows the
