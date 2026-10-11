@@ -212,4 +212,21 @@ else
     fail "release.yml needs a deploy-appcast job using actions/deploy-pages"
 fi
 
+# 11. generate_appcast's -o option takes a *path*, not a file name: passing a
+#     bare `-o appcast.xml` writes the feed relative to the checkout instead of
+#     into the archives directory, so the copy afterwards fails with "No such
+#     file or directory" — which is exactly how the v1.0.0 release died, after
+#     spending the notarization wait. The tool already writes appcast.xml into
+#     the archives directory, which is what the workflow copies from.
+if grep -qE '(-o|--output) +appcast' "$WF"; then
+    fail "generate_appcast -o takes a path, not a name: drop it and copy appcast.xml from the archives dir"
+else
+    pass "generate_appcast writes the feed into the archives dir (no -o path pitfall)"
+fi
+if grep -q 'test -f dist/appcast-input/appcast.xml' "$WF"; then
+    pass "the appcast step asserts the feed exists before copying it"
+else
+    fail "the appcast step must assert dist/appcast-input/appcast.xml exists before copying"
+fi
+
 exit $FAILED

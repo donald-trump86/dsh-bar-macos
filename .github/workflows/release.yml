@@ -223,11 +223,15 @@ jobs:
           cp "dist/$ZIP_NAME" dist/appcast-input/
           cp "dist/${ZIP_NAME%.zip}.html" dist/appcast-input/
           # The signing key travels over stdin: it never lands on disk or in argv.
+          # No -o here: generate_appcast's -o is a *path*, so a bare name would be
+          # written relative to the checkout root. Its default output location is
+          # the archives directory, which is what we copy from below.
           echo "$SPARKLE_PRIVATE_ED_KEY" | ./Vendor/Sparkle/bin/generate_appcast \
               --ed-key-file - \
               --embed-release-notes \
               --download-url-prefix "https://github.com/${GH_REPO}/releases/download/${TAG}/" \
-              -o appcast.xml dist/appcast-input
+              dist/appcast-input
+          test -f dist/appcast-input/appcast.xml
           cp dist/appcast-input/appcast.xml dist/appcast.xml
 
       - name: Upload workflow artifact
