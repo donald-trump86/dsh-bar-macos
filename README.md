@@ -124,6 +124,19 @@ xattr -cr "/Applications/DeepSeek Harness Bar.app"
 | 已配置 `APPLE_CERT_P12_BASE64`、`APPLE_CERT_PASSWORD`、`APPLE_ID`、`APPLE_TEAM_ID`、`APPLE_APP_PASSWORD` | Developer ID 签名 + 硬化运行时 + 公证 + stapler，Gatekeeper 可直接打开 |
 | 未配置 | 仅 ad-hoc 签名，Release 说明会明确提示需要手动执行 `xattr -cr` |
 
+#### 自动更新（Sparkle）
+
+应用内置 Sparkle 2 自动更新：每天后台检查一次（`SUScheduledCheckInterval` = 86400），发现新版时弹窗由用户确认安装（不静默更新）。菜单栏 **Check for Updates…** 与偏好设置 → **软件更新** 可随时手动检查。
+
+发布链路另外需要：
+
+| 配置 | 用途 |
+| :--- | :--- |
+| Secret `SPARKLE_PRIVATE_ED_KEY` | EdDSA 私钥，用于签署 appcast.xml（公钥已写入 `Info.plist` 的 `SUPublicEDKey`）。缺失时 release 工作流在生成 appcast 一步直接失败 |
+| 仓库 Settings → Pages → Source = **GitHub Actions** | 一次性设置。`deploy-appcast` 任务把 appcast.xml 发布到 `https://donald-trump86.github.io/dsh-bar-macos/appcast.xml`（即 `SUFeedURL`） |
+
+appcast 由 release 工作流在公证、staple 之后用 `Vendor/Sparkle/bin/generate_appcast` 生成并以私钥签署，同时作为 Release 附件备份。
+
 发布前可在本地复现同样的产物：
 
 ```bash
@@ -170,6 +183,7 @@ dsh-bar-macos/
 │   ├── RotatingLogWriter.swift # 独立后台日志写入、10 MiB 限额与两份历史
 │   ├── HotKeyManager.swift     # “打开 Web”可配置全局热键
 │   ├── SettingsManager.swift   # 端口、开机启动 (SMAppService)、热键持久化
+│   ├── UpdateManager.swift     # Sparkle 自动更新（检查更新、自动检查开关）
 │   ├── DashboardWindow.swift   # 毛玻璃偏好设置面板
 │   ├── LogWindow.swift         # 内置实时日志窗口
 │   ├── LogTextBuffer.swift      # 跨读取完整行脱敏、残片隐藏与字节限额
@@ -183,8 +197,11 @@ dsh-bar-macos/
 │   └── icon.png                # README 与面板使用的图标
 ├── Packaging/
 │   └── DSHBar.entitlements     # Developer ID 签名使用的 hardened runtime 配置
+├── Vendor/
+│   ├── Sparkle.framework       # 预编译 Sparkle 2.10.0（build.sh 内翻新签名嵌套组件）
+│   └── Sparkle/bin/            # generate_appcast / sign_update / generate_keys
 ├── Info.plist                  # Bundle 配置（LSUIElement，仅菜单栏）
-├── .github/workflows/release.yml # 标签触发的通用应用构建与 Release 发布
+├── .github/workflows/release.yml # 标签触发构建、公证、appcast 签署与 Pages 部署
 ├── build.sh                    # macOS 13+ 通用二进制编译、签名与打包脚本
 ├── Makefile                    # make build / install / run / clean
 ├── LICENSE                     # MIT
