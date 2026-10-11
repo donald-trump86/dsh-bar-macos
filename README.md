@@ -133,7 +133,7 @@ xattr -cr "/Applications/DeepSeek Harness Bar.app"
 | 配置 | 用途 |
 | :--- | :--- |
 | Secret `SPARKLE_PRIVATE_ED_KEY` | EdDSA 私钥，用于签署 appcast.xml（公钥已写入 `Info.plist` 的 `SUPublicEDKey`）。缺失时 release 工作流在生成 appcast 一步直接失败 |
-| 仓库 Settings → Pages → Source = **GitHub Actions** | 现有 `deploy-appcast` 任务发布 Pages 镜像；应用更新不依赖该镜像 |
+| 仓库 Settings → Pages → Source = **GitHub Actions** | 可选镜像：仅从 `main` 手动触发发布时运行 `deploy-appcast`，标签发布跳过镜像；应用更新不依赖 Pages |
 
 应用的 `SUFeedURL` 为 [最新正式版的 appcast](https://github.com/donald-trump86/dsh-bar-macos/releases/latest/download/appcast.xml)。该地址经 GitHub 控制的 HTTPS 重定向获取 Release 附件，不经过 Pages 自定义域名或 Cloudflare 人机验证。每个正式版 Release 都必须包含 `appcast.xml`；下载包仍使用带版本标签的固定 URL。
 

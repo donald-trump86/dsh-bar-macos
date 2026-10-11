@@ -279,10 +279,10 @@ jobs:
               ${prerelease_args[@]+"${prerelease_args[@]}"}
           fi
 
-  # The feed is deployed last and only from the release job's signed output:
-  # users' installed apps read appcast.xml from the Pages URL declared in
-  # SUFeedURL, so a half-deployed or stale feed means silent update rot.
+  # Optional mirror: installed apps use the GitHub Release asset, not Pages.
+  # The protected github-pages environment permits main, not release tags.
   deploy-appcast:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
     needs: release
     runs-on: ubuntu-latest
     permissions:

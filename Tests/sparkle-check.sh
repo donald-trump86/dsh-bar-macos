@@ -304,4 +304,12 @@ else
     pass "SUFeedURL avoids the redirected Pages domain"
 fi
 
+# Pages is only an optional mirror. Tag runs must not attempt deployments to
+# the branch-protected github-pages environment; the app uses Release assets.
+if grep -Fq 'if: ${{ github.event_name == '\''workflow_dispatch'\'' && github.ref == '\''refs/heads/main'\'' }}' "$WF"; then
+    pass "Pages mirror runs only on manual releases from main"
+else
+    fail "Pages mirror must be gated to workflow_dispatch on main"
+fi
+
 exit $FAILED
