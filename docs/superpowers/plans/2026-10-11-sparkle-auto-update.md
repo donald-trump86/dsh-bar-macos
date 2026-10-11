@@ -470,3 +470,23 @@ Open questions for execution mode (user picks):
 End-to-end proof on the first `v*` tag after merge: release builds → zip
 notarized → appcast signed+published at the SUFeedURL → an installed older
 build shows the standard update prompt within 24h (or via "Check Now").
+
+## Implementation addendum: 1.0.1 feed-host change
+
+The original Pages feed URL inherits the account's root Pages custom domain,
+`luvch1nabest.me`. Its redirect leads to a Cloudflare browser challenge, which
+is unsuitable for Sparkle's non-browser requests. The user chose to preserve
+that domain and switch the app's update feed to:
+
+`https://github.com/donald-trump86/dsh-bar-macos/releases/latest/download/appcast.xml`
+
+This stable URL was verified to serve XML through HTTPS-only GitHub redirects.
+Every stable release must include the `appcast.xml` asset. Enclosure ZIP URLs
+remain versioned; the Pages deployment remains a mirror, not the app's feed.
+Version 1.0.1 carries this change. Users of 1.0.0 must install 1.0.1 manually
+once because their existing feed URL is unchanged.
+
+Release verification also confirmed that 1.0.0's checksum and EdDSA signature
+were valid, but Apple notarization was skipped: Developer ID credentials were
+not configured. EdDSA signing does not replace Developer ID signing or Apple
+notarization.

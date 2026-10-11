@@ -118,10 +118,10 @@ PB=/usr/libexec/PlistBuddy
 plist_get() { "$PB" -c "Print :$1" Info.plist 2>/dev/null; }
 
 FEED="$(plist_get SUFeedURL)"
-if [[ "$FEED" == "https://donald-trump86.github.io/dsh-bar-macos/appcast.xml" ]]; then
-    pass "SUFeedURL points at the GitHub Pages appcast"
+if [[ "$FEED" == "https://github.com/donald-trump86/dsh-bar-macos/releases/latest/download/appcast.xml" ]]; then
+    pass "SUFeedURL points at the release-asset appcast"
 else
-    fail "SUFeedURL must be https://donald-trump86.github.io/dsh-bar-macos/appcast.xml (got '${FEED:-unset}')"
+    fail "SUFeedURL must be https://github.com/donald-trump86/dsh-bar-macos/releases/latest/download/appcast.xml (got '${FEED:-unset}')"
 fi
 
 PUBKEY="$(plist_get SUPublicEDKey)"
@@ -290,6 +290,18 @@ STUB
     else
         fail "v0.* tags must still pass --prerelease (rc|args = '$PRE')"
     fi
+fi
+
+# 13. The feed must not live under *.github.io. The account's root Pages site
+#     carries a custom domain, so every github.io URL 301s off-domain to it —
+#     over plain http:// first, behind a Cloudflare bot challenge. A non-browser
+#     updater cannot solve that challenge. The release-asset URL instead follows
+#     GitHub-controlled HTTPS redirects to release-assets.githubusercontent.com,
+#     avoiding the user's custom domain entirely.
+if [[ "$FEED" == *".github.io"* ]]; then
+    fail "SUFeedURL must not use *.github.io: the root Pages custom domain 301s it to http://luvch1nabest.me, which Sparkle cannot fetch"
+else
+    pass "SUFeedURL avoids the redirected Pages domain"
 fi
 
 exit $FAILED

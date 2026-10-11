@@ -133,15 +133,19 @@ xattr -cr "/Applications/DeepSeek Harness Bar.app"
 | 配置 | 用途 |
 | :--- | :--- |
 | Secret `SPARKLE_PRIVATE_ED_KEY` | EdDSA 私钥，用于签署 appcast.xml（公钥已写入 `Info.plist` 的 `SUPublicEDKey`）。缺失时 release 工作流在生成 appcast 一步直接失败 |
-| 仓库 Settings → Pages → Source = **GitHub Actions** | 一次性设置。`deploy-appcast` 任务把 appcast.xml 发布到 `https://donald-trump86.github.io/dsh-bar-macos/appcast.xml`（即 `SUFeedURL`） |
+| 仓库 Settings → Pages → Source = **GitHub Actions** | 现有 `deploy-appcast` 任务发布 Pages 镜像；应用更新不依赖该镜像 |
 
-appcast 由 release 工作流在公证、staple 之后用 `Vendor/Sparkle/bin/generate_appcast` 生成并以私钥签署，同时作为 Release 附件备份。
+应用的 `SUFeedURL` 为 [最新正式版的 appcast](https://github.com/donald-trump86/dsh-bar-macos/releases/latest/download/appcast.xml)。该地址经 GitHub 控制的 HTTPS 重定向获取 Release 附件，不经过 Pages 自定义域名或 Cloudflare 人机验证。每个正式版 Release 都必须包含 `appcast.xml`；下载包仍使用带版本标签的固定 URL。
+
+appcast 由 release 工作流在最终打包后用 `Vendor/Sparkle/bin/generate_appcast` 生成，包含下载包的 EdDSA 签名；若配置了 Developer ID 与公证凭据，则先完成公证和 staple。未配置时仍为 ad-hoc 签名，EdDSA 校验不等于 Apple 公证。
+
+**1.0.0 用户需手动下载安装 1.0.1 一次**：1.0.0 内嵌的 Pages 更新源受到自定义域名重定向影响；1.0.1 起使用上述 Releases 更新源。
 
 发布前可在本地复现同样的产物：
 
 ```bash
-VERSION=1.0.0 ./build.sh          # 通用二进制 + ad-hoc 签名
-VERSION=1.0.0 SIGNING_IDENTITY="Developer ID Application: …" ./build.sh
+VERSION=1.0.1 ./build.sh          # 通用二进制 + ad-hoc 签名
+VERSION=1.0.1 SIGNING_IDENTITY="Developer ID Application: …" ./build.sh
 ```
 
 ### 方式二：从源码编译并安装
