@@ -44,6 +44,7 @@ final class UpdateManager: NSObject, NSMenuItemValidation {
     }
 
     @objc func checkForUpdates(_ sender: Any?) {
+        guard canCheckForUpdates else { return }
         controller.checkForUpdates(sender)
     }
 

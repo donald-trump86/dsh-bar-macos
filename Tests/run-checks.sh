@@ -148,4 +148,11 @@ else
     fail "sparkle api check failed — run bash $SCRIPT_DIR/sparkle-api-check.sh to see why"
 fi
 
+# 13. Check unavailable actions and Dashboard availability without live updates.
+if python3 "$SCRIPT_DIR/update-availability-check.py"; then
+    pass "update actions and preferences respect Sparkle availability"
+else
+    fail "update availability check failed — run python3 $SCRIPT_DIR/update-availability-check.py to see why"
+fi
+
 exit $FAILED

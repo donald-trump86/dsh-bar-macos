@@ -752,6 +752,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
 
         configureActionButton(updateCheckButton, title: L(.updateCheckNow), action: #selector(didClickCheckForUpdates))
         updateCheckButton.controlSize = .small
+        updateCheckButton.isEnabled = UpdateManager.shared.canCheckForUpdates
         updateRow.addSubview(updateCheckButton)
 
         // Read-only initialization: the flag is written only from
@@ -1055,6 +1056,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     }
     
     func updateState(_ snapshot: ServiceSnapshot) {
+        updateCheckButton.isEnabled = UpdateManager.shared.canCheckForUpdates
         clearPendingTagRestart(isRunning: snapshot.isRunning)
         let color: NSColor
         switch snapshot.phase {
