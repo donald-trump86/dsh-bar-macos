@@ -140,8 +140,8 @@ appcast 由 release 工作流在公证、staple 之后用 `Vendor/Sparkle/bin/ge
 发布前可在本地复现同样的产物：
 
 ```bash
-VERSION=0.1.6 ./build.sh          # 通用二进制 + ad-hoc 签名
-VERSION=0.1.6 SIGNING_IDENTITY="Developer ID Application: …" ./build.sh
+VERSION=1.0.0 ./build.sh          # 通用二进制 + ad-hoc 签名
+VERSION=1.0.0 SIGNING_IDENTITY="Developer ID Application: …" ./build.sh
 ```
 
 ### 方式二：从源码编译并安装
