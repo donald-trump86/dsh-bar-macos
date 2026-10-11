@@ -1,5 +1,6 @@
 import Cocoa
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var menu: NSMenu!
@@ -11,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var restartMenuItem: NSMenuItem!
     private var copyUrlMenuItem: NSMenuItem!
     private var logsMenuItem: NSMenuItem!
+    private var checkForUpdatesMenuItem: NSMenuItem!
     private var dashboardMenuItem: NSMenuItem!
     private var quitAndStopMenuItem: NSMenuItem!
     private var notifierObserverToken: UUID?
@@ -201,6 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupMenu() {
         menu = NSMenu()
         menu.autoenablesItems = false
+        menu.delegate = self
 
         statusMenuItem = NSMenuItem(title: L(.checkingServiceStatus), action: nil, keyEquivalent: "")
         statusMenuItem.isEnabled = true
@@ -267,6 +270,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         logsMenuItem.keyEquivalentModifierMask = [.command]
         logsMenuItem.target = self
         menu.addItem(logsMenuItem)
+
+        checkForUpdatesMenuItem = NSMenuItem(
+            title: L(.checkForUpdatesEllipsis),
+            action: #selector(UpdateManager.checkForUpdates(_:)),
+            keyEquivalent: ""
+        )
+        checkForUpdatesMenuItem.target = UpdateManager.shared
+        checkForUpdatesMenuItem.isEnabled = UpdateManager.shared.canCheckForUpdates
+        menu.addItem(checkForUpdatesMenuItem)
 
         menu.addItem(.separator())
 
@@ -463,5 +475,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if days > 0 { return L(.durationDaysHours, ["days": "\(days)", "hours": "\(hours)"]) }
         if hours > 0 { return L(.durationHoursMinutes, ["hours": "\(hours)", "minutes": "\(minutes)"]) }
         return "\(minutes)m"
+    }
+}
+
+extension AppDelegate: NSMenuDelegate {
+    // autoenablesItems is off for this menu, so validation never runs on its
+    // own. The update item's availability changes while the app sits idle, so
+    // it is re-evaluated every time the menu opens.
+    func menuWillOpen(_ menu: NSMenu) {
+        checkForUpdatesMenuItem.isEnabled = UpdateManager.shared.canCheckForUpdates
     }
 }

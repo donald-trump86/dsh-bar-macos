@@ -80,6 +80,10 @@ final class Localization {
         case installTagInvalid, installAlreadyRunning, installNoOutput
         case installFailedBody, installNpmNotFound, installCouldNotStart
 
+        // Updates
+        case checkForUpdatesEllipsis, softwareUpdates
+        case updateCurrentVersion, updateCheckNow, autoCheckUpdates
+
         // Port change dialog
         case portUpdatedTitle, portUpdatedBody
 
@@ -312,6 +316,13 @@ final class Localization {
         .installNpmNotFound: "npm was not found on your PATH.",
         .installCouldNotStart: "npm could not be started: {reason}",
 
+        // Updates
+        .checkForUpdatesEllipsis: "Check for Updates…",
+        .softwareUpdates: "Software Updates",
+        .updateCurrentVersion: "Version {version}",
+        .updateCheckNow: "Check Now",
+        .autoCheckUpdates: "Check for updates automatically",
+
         // Port change dialog
         .portUpdatedTitle: "Port Updated to {port}",
         .portUpdatedBody: "The server is currently running. Would you like to restart the service on the new port now?",
@@ -537,6 +548,13 @@ final class Localization {
         .installFailedBody: "npm 以状态码 {code} 退出：\n{output}",
         .installNpmNotFound: "在 PATH 中没有找到 npm。",
         .installCouldNotStart: "无法启动 npm：{reason}",
+
+        // Updates
+        .checkForUpdatesEllipsis: "检查更新…",
+        .softwareUpdates: "软件更新",
+        .updateCurrentVersion: "版本 {version}",
+        .updateCheckNow: "立即检查",
+        .autoCheckUpdates: "自动检查更新",
 
         // Port change dialog
         .portUpdatedTitle: "端口已改为 {port}",

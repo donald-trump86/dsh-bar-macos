@@ -140,4 +140,12 @@ else
     fail "sparkle check failed — run bash $SCRIPT_DIR/sparkle-check.sh to see why"
 fi
 
+# 12. The update entry point must compile against the vendored Sparkle API and
+#     the menu must actually reach it.
+if bash "$SCRIPT_DIR/sparkle-api-check.sh"; then
+    pass "UpdateManager compiles against vendored Sparkle and the menu wires to it"
+else
+    fail "sparkle api check failed — run bash $SCRIPT_DIR/sparkle-api-check.sh to see why"
+fi
+
 exit $FAILED
