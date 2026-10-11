@@ -148,4 +148,44 @@ else
     fail "SUScheduledCheckInterval must be 86400 (got '${INTERVAL:-unset}')"
 fi
 
+# 8. The preferences row is where the automatic-check policy becomes visible.
+#    Two silent failures are pinned here: the row falling out of the card's
+#    bottom chain (layout breaks only on some window heights), and the
+#    checkbox writing Sparkle's flag on load instead of on user toggle — which
+#    would silently enable automatic checks for everyone who never touched it.
+if grep -q 'updateRow.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8)' Sources/DashboardWindow.swift; then
+    pass "updateRow closes the preferences card bottom chain"
+else
+    fail "updateRow must pin to card.bottomAnchor with constant -8 (tagRow keeps height 54, updateRow closes the card)"
+fi
+if grep -q 'didClickCheckForUpdates' Sources/DashboardWindow.swift \
+        && grep -q 'didToggleAutoUpdates' Sources/DashboardWindow.swift; then
+    pass "Software Updates row has check and auto-check actions"
+else
+    fail "DashboardWindow must define didClickCheckForUpdates and didToggleAutoUpdates"
+fi
+WRITES="$(grep -c 'UpdateManager\.shared\.automaticallyChecksForUpdates *=' Sources/DashboardWindow.swift || true)"
+if [[ "$WRITES" == "1" ]]; then
+    pass "automaticallyChecksForUpdates is written from exactly one place (the toggle)"
+else
+    fail "automaticallyChecksForUpdates must be written exactly once in DashboardWindow (found $WRITES) — never on load"
+fi
+if grep -q 'autoUpdateCheckbox.state = UpdateManager.shared.automaticallyChecksForUpdates' Sources/DashboardWindow.swift; then
+    pass "auto-check checkbox is initialized read-only from Sparkle state"
+else
+    fail "autoUpdateCheckbox.state must be initialized from UpdateManager.shared.automaticallyChecksForUpdates on load"
+fi
+
+# 9. The dashboard size invariants that run-checks.sh greps must survive this
+#    row: they are what keeps the panel height derivable from its rows.
+INV_DRIFT=""
+grep -q 'minSize = NSSize(width: 540, height: Self.naturalContentHeight)' Sources/DashboardWindow.swift || INV_DRIFT="$INV_DRIFT minSize"
+grep -q 'private static let naturalContentHeight: CGFloat = 592' Sources/DashboardWindow.swift || INV_DRIFT="$INV_DRIFT naturalContentHeight"
+grep -q 'preferencesScroll.documentView = preferencesCard' Sources/DashboardWindow.swift || INV_DRIFT="$INV_DRIFT documentView"
+if [[ -z "$INV_DRIFT" ]]; then
+    pass "run-checks.sh DashboardWindow size invariants still hold"
+else
+    fail "DashboardWindow drifted from run-checks.sh invariants:$INV_DRIFT"
+fi
+
 exit $FAILED

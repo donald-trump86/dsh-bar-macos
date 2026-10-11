@@ -102,7 +102,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     /// The header, service card and footer are pinned at fixed heights, so they
     /// set the floor: 34 top + 72 header + 14 + 160 service + 14 + scroll +
     /// 14 + 32 footer + 18 bottom. The preferences card is inside a scroll view
-    /// and no longer contributes its full 486pt to that sum — that is what
+    /// and no longer contributes its full 541pt to that sum — that is what
     /// lets the panel be dragged shorter than its natural height.
     private static let naturalContentHeight: CGFloat = 592
     
@@ -151,6 +151,13 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     /// The running state the previous `updateState` tick saw. `updateState` runs
     /// every ~2s, so "the service restarted" has to be an edge, not a level.
     private var lastTagServiceRunning = false
+    // Software Updates row. `updateInfoLabel` is the live version line, held
+    // here rather than in the stack `makeTextStack` builds for the same reason
+    // `tagInfoLabel` is: the language-change rebuild in `setupUI()` recreates
+    // that stack while these properties survive it.
+    private let updateInfoLabel = NSTextField(labelWithString: "")
+    private let updateCheckButton = NSButton()
+    private let autoUpdateCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let autoRestartCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let notificationInfoLabel = NSTextField(labelWithString: L(.notifNotChecked))
     private let notificationActionButton = NSButton()
@@ -289,7 +296,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             visualEffect.addSubview($0)
         }
 
-        // The preferences rows are a fixed 486pt stack, taller than the
+        // The preferences rows are a fixed 541pt stack, taller than the
         // smallest panel worth showing. Scrolling them is what lets the window
         // shrink below that height instead of clipping rows off the top.
         let preferencesScroll = NSScrollView()
@@ -308,7 +315,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         let cardFillsClip = preferencesCard.heightAnchor
             .constraint(greaterThanOrEqualTo: preferencesScroll.contentView.heightAnchor)
         let cardIsNaturalHeight = preferencesCard.heightAnchor
-            .constraint(equalToConstant: 486)
+            .constraint(equalToConstant: 541)
         cardIsNaturalHeight.priority = .defaultHigh
 
         NSLayoutConstraint.activate([
@@ -717,6 +724,46 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         tagInstallButton.controlSize = .small
         tagRow.addSubview(tagInstallButton)
 
+        let separator8 = makeSeparator()
+        card.addSubview(separator8)
+
+        let updateRow = NSView()
+        updateRow.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(updateRow)
+
+        updateInfoLabel.font = NSFont.systemFont(ofSize: 11)
+        updateInfoLabel.textColor = .secondaryLabelColor
+        updateInfoLabel.lineBreakMode = .byTruncatingTail
+        updateInfoLabel.translatesAutoresizingMaskIntoConstraints = false
+        updateInfoLabel.stringValue = L(.updateCurrentVersion, ["version": UpdateManager.shared.currentVersion])
+        // Same substitution as `tagInfoLabel` above: the row's description is
+        // the live version line, so the stack's placeholder is dropped and
+        // `updateInfoLabel` takes its slot.
+        let updateText = makeTextStack(
+            title: L(.softwareUpdates),
+            description: L(.updateCurrentVersion, ["version": UpdateManager.shared.currentVersion])
+        )
+        if let placeholder = updateText.arrangedSubviews.last {
+            updateText.removeArrangedSubview(placeholder)
+            placeholder.removeFromSuperview()
+        }
+        updateText.addArrangedSubview(updateInfoLabel)
+        updateRow.addSubview(updateText)
+
+        configureActionButton(updateCheckButton, title: L(.updateCheckNow), action: #selector(didClickCheckForUpdates))
+        updateCheckButton.controlSize = .small
+        updateRow.addSubview(updateCheckButton)
+
+        // Read-only initialization: the flag is written only from
+        // `didToggleAutoUpdates`, so loading the row can never silently turn
+        // the user's choice off and on again.
+        autoUpdateCheckbox.title = L(.autoCheckUpdates)
+        autoUpdateCheckbox.state = UpdateManager.shared.automaticallyChecksForUpdates ? .on : .off
+        autoUpdateCheckbox.target = self
+        autoUpdateCheckbox.action = #selector(didToggleAutoUpdates)
+        autoUpdateCheckbox.translatesAutoresizingMaskIntoConstraints = false
+        updateRow.addSubview(autoUpdateCheckbox)
+
         NSLayoutConstraint.activate([
             title.topAnchor.constraint(equalTo: card.topAnchor, constant: 15),
             title.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 18),
@@ -840,7 +887,27 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             tagRow.topAnchor.constraint(equalTo: separator7.bottomAnchor),
             tagRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
             tagRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            tagRow.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
+            tagRow.heightAnchor.constraint(equalToConstant: 54),
+
+            separator8.topAnchor.constraint(equalTo: tagRow.bottomAnchor),
+            separator8.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
+            separator8.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
+            separator8.heightAnchor.constraint(equalToConstant: 1),
+
+            updateRow.topAnchor.constraint(equalTo: separator8.bottomAnchor),
+            updateRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
+            updateRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
+            updateRow.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
+
+            updateText.leadingAnchor.constraint(equalTo: updateRow.leadingAnchor),
+            updateText.centerYAnchor.constraint(equalTo: updateRow.centerYAnchor),
+            updateText.trailingAnchor.constraint(lessThanOrEqualTo: autoUpdateCheckbox.leadingAnchor, constant: -12),
+            autoUpdateCheckbox.centerYAnchor.constraint(equalTo: updateRow.centerYAnchor),
+            updateCheckButton.leadingAnchor.constraint(equalTo: autoUpdateCheckbox.trailingAnchor, constant: 12),
+            updateCheckButton.trailingAnchor.constraint(equalTo: updateRow.trailingAnchor),
+            updateCheckButton.centerYAnchor.constraint(equalTo: updateRow.centerYAnchor),
+            updateCheckButton.widthAnchor.constraint(equalToConstant: 84),
+            updateCheckButton.heightAnchor.constraint(equalToConstant: 26),
 
             tagText.leadingAnchor.constraint(equalTo: tagRow.leadingAnchor),
             tagText.centerYAnchor.constraint(equalTo: tagRow.centerYAnchor),
@@ -1629,6 +1696,18 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         if !enabled {
             ServiceManager.shared.cancelPendingAutoRestart()
         }
+    }
+
+    @objc private func didClickCheckForUpdates() {
+        UpdateManager.shared.checkForUpdates(self)
+    }
+
+    /// The single write of Sparkle's auto-check flag, from the user's own
+    /// toggle. Never written on load: reasserting the value at startup would
+    /// paper over (and destroy evidence of) whatever the user last chose.
+    @objc private func didToggleAutoUpdates() {
+        UpdateManager.shared.automaticallyChecksForUpdates =
+            (autoUpdateCheckbox.state == .on)
     }
 
     @objc private func didClickNotificationAction() {
