@@ -262,6 +262,7 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" \
               "dist/$ZIP_NAME" "dist/$ZIP_NAME.sha256" "dist/appcast.xml" --clobber
+            gh release edit "$TAG" --notes-file dist/release-notes.md
           else
             # macOS runners run bash 3.2, where expanding an empty array is an
             # "unbound variable" error under `set -u` — every v0.* release

@@ -250,8 +250,8 @@ else
 
     # Runs the extracted step with a stub gh; prints "<rc>|<gh args>".
     run_release_step() {
-        local tag="$1" d="$2"
-        rm -rf "$d"; mkdir -p "$d/bin" "$d/dist"
+        local tag="$1" d="$2" mode="${3:-new}"
+        mkdir -p "$d/bin" "$d/dist"
         : > "$d/dist/DSH-Bar-1.0.0-universal.zip"
         : > "$d/dist/DSH-Bar-1.0.0-universal.zip.sha256"
         : > "$d/dist/appcast.xml"
@@ -259,13 +259,19 @@ else
         cat > "$d/bin/gh" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "$GH_ARGS_FILE"
-if [[ "$1" == "release" && "$2" == "view" ]]; then exit 1; fi
+if [[ "$1" == "release" && "$2" == "view" ]]; then
+    [[ "$GH_RELEASE_MODE" != new ]]
+    exit $?
+fi
+if [[ "$1" == "release" && "$2" == "upload" && "$GH_RELEASE_MODE" == upload-fails ]]; then
+    exit 17
+fi
 exit 0
 STUB
         chmod +x "$d/bin/gh"
         local rc=0
         ( cd "$d" && PATH="$d/bin:$PATH" GH_ARGS_FILE="$d/args.txt" GH_TOKEN=x \
-              GH_REPO=donald-trump86/dsh-bar-macos TAG="$tag" \
+              GH_RELEASE_MODE="$mode" GH_REPO=donald-trump86/dsh-bar-macos TAG="$tag" \
               ZIP_NAME=DSH-Bar-1.0.0-universal.zip /bin/bash "$REL_DIR/step.sh" ) \
             >/dev/null 2>&1 || rc=$?
         echo "$rc|$(cat "$d/args.txt" 2>/dev/null | tr '\n' ' ')"
@@ -273,7 +279,26 @@ STUB
 
     STABLE="$(run_release_step v1.0.0 "$REL_DIR/stable")"
     PRE="$(run_release_step v0.9.0 "$REL_DIR/pre")"
-    rm -rf "$REL_DIR"
+    EXISTING="$(run_release_step v1.0.0 "$REL_DIR/existing" existing)"
+    FAILED_UPLOAD="$(run_release_step v1.0.0 "$REL_DIR/failed-upload" upload-fails)"
+    if [[ "$EXISTING" == 0\|* && "$EXISTING" == *"release upload"*"release edit v1.0.0 --notes-file dist/release-notes.md"* ]]; then
+        pass "existing-release uploads refresh the body from the current notes"
+    else
+        fail "existing releases must edit their notes after successful uploads (rc|args = '$EXISTING')"
+    fi
+    if [[ "$FAILED_UPLOAD" == 17\|* && "$FAILED_UPLOAD" != *"release edit"* ]]; then
+        pass "failed uploads do not publish a new signing assurance"
+    else
+        fail "upload failures must abort before editing release notes (rc|args = '$FAILED_UPLOAD')"
+    fi
+    # Resolve and verify the fixture root before deleting it.
+    REL_RESOLVED="$(cd "$REL_DIR" && pwd -P)"
+    TMP_RESOLVED="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+    if [[ "$REL_RESOLVED" == "$TMP_RESOLVED"/dshbar-release-step.* ]]; then
+        rm -rf -- "$REL_RESOLVED"
+    else
+        fail "refusing to remove unexpected release fixture root: $REL_RESOLVED"
+    fi
 
     if [[ "$STABLE" == 0\|* && "$STABLE" == *"release create"* ]]; then
         pass "release step creates a stable release under bash 3.2 (empty prerelease args)"
@@ -310,6 +335,24 @@ if grep -Fq 'if: ${{ github.event_name == '\''workflow_dispatch'\'' && github.re
     pass "Pages mirror runs only on manual releases from main"
 else
     fail "Pages mirror must be gated to workflow_dispatch on main"
+fi
+
+# Documentation must distinguish local ad-hoc builds from notarized releases.
+if grep -Fq '无第三方依赖' README.md || grep -Fq 'no third-party' CONTRIBUTING.md; then
+    fail "dependency documentation must acknowledge vendored Sparkle"
+else
+    pass "dependency documentation acknowledges vendored Sparkle"
+fi
+if grep -Fq '本项目没有使用 Apple Developer Program' README.md \
+        || grep -Fq -- '- Ad-hoc signed, not notarized.' CONTRIBUTING.md; then
+    fail "signing documentation must not describe every build as unnotarized"
+else
+    pass "unsigned troubleshooting is scoped to local or explicitly unnotarized builds"
+fi
+if grep -Fq '不包含公证和 staple' README.md; then
+    pass "local Developer ID signing is not presented as notarization"
+else
+    fail "README must distinguish local signing from notarization and staple"
 fi
 
 exit $FAILED

@@ -1,7 +1,7 @@
 # Contributing to DeepSeek Harness Bar
 
-A native macOS menu bar companion for DeepSeek Harness. Pure Swift, no third-party
-dependencies, macOS 13+.
+A native Swift/AppKit menu bar companion for DeepSeek Harness, with vendored
+Sparkle for updates. Requires macOS 13+.
 
 ## Build and run
 
@@ -99,4 +99,6 @@ or you put a fork back into every 2-second tick.
   target exists.
 - No unit test target. `make check` is the entire safety net, and it only covers
   the failures that are silent.
-- Ad-hoc signed, not notarized. See the README troubleshooting section.
+- Local builds default to ad-hoc signing. Releases can use Developer ID signing
+  and Apple notarization when the required credentials are configured. Check the
+  release notes; the README quarantine workaround is for unnotarized builds.

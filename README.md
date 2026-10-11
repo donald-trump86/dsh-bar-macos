@@ -6,27 +6,27 @@
 
 <p align="center">
   <b>A native macOS menu bar companion for DeepSeek Harness.</b><br>
-  专为 DeepSeek Harness 打造的原生 macOS 菜单栏助手：查看运行状态、一键启停、直达 Web 界面。
+  DeepSeek Harness 的 macOS 菜单栏工具：查看服务状态、启动或停止服务、打开 Web 界面。
 </p>
 
 ---
 
-## 💡 为什么用它？ / Why DeepSeek Harness Bar?
+## 为什么用它？ / Why DeepSeek Harness Bar?
 
-如果你平时用 `dsh web` 启动 DeepSeek Harness，那么“服务在不在跑”“怎么停掉后台进程”“换端口后怎么重启”这些事，通常都得回到终端敲 `lsof`、`kill`。DSH Bar 把这些操作放进菜单栏，随手一点即可。
+平时用 `dsh web` 启动 DeepSeek Harness，查看服务是否还在运行、结束后台进程、换端口后重启，通常都要回到终端，用到 `lsof`、`kill` 等命令。DSH Bar 把这些操作放进菜单栏。
 
-- **纯原生 Swift**：无第三方依赖，发布包同时支持 Apple Silicon 与 Intel，不占用 Dock 位置。
-- **状态一眼可见**：菜单栏状态灯区分检查中、启动中、运行中、端口冲突与错误，并显示 PID、运行时长和 DSH 版本。
-- **可自定义**：端口、打开 Web 的全局热键与开机自启动；应用和服务启动/重启时都不会自动打开网页。
-- **只停自己的服务**：停止时只结束由本应用启动的 `dsh` 进程，不会误杀占用同一端口的浏览器或其他程序。
+- **原生 Swift / AppKit 界面**：自动更新使用 Sparkle。发布包支持 Apple Silicon 和 Intel，不占用 Dock 位置。
+- **查看状态**：菜单栏状态灯区分检查中、启动中、运行中、端口冲突与错误，还会显示 PID、运行时长和 DSH 版本。
+- **修改设置**：可以设置端口、打开 Web 的全局热键和开机自启动。启动或重启应用、服务时，都不会自动打开网页。
+- **只停自己的服务**：停止时只结束本应用启动的 `dsh` 进程，不会结束占用同一端口的浏览器或其他程序。
 
 ---
 
-## ⚡️ 前置条件 / Prerequisites
+## 前置条件 / Prerequisites
 
-> **本应用是 DeepSeek Harness 的伴侣工具，需要官方 `dsh` 命令行。**
+本应用需要官方 `dsh` 命令行。
 
-DSH Bar 会通过 `which dsh` 自动检测安装路径并读取版本。如果没有找到，会在设置界面显示 **Install…**，复制官方 npm 安装命令并打开终端协助安装：
+DSH Bar 通过 `which dsh` 检测安装路径并读取版本。找不到时，设置界面会显示 **Install…**，复制官方 npm 安装命令并打开终端，供你安装：
 
 ```bash
 npm install -g @deepseek-ai/dsh
@@ -36,60 +36,60 @@ npm install -g @deepseek-ai/dsh
 
 ---
 
-## 🚨 常见问题：提示“应用已损坏，无法打开”？ / Troubleshooting
+## 提示“应用已损坏，无法打开”？ / Troubleshooting
 
-本项目没有使用 Apple Developer Program 的签名与公证证书，所以从 GitHub 下载后，macOS 的 Gatekeeper 可能提示：
+发布包是否经过 Apple 签名和公证，取决于构建时的配置，具体看对应 Release 的说明。对于明确标注未公证的版本，下载后可能看到 Gatekeeper 提示：
 
 > **“DeepSeek Harness Bar 已损坏，无法打开。你应该将它移到废纸篓”** 或 **“无法打开，因为无法验证开发者”**
 
-**解决方法**：在终端里解除隔离属性。
+这类未公证版本可以在终端里解除隔离属性：
 
 ```bash
 xattr -cr "/Applications/DeepSeek Harness Bar.app"
 ```
 
-执行后即可正常启动。若提示权限不足，再在命令前加上 `sudo`。
+解除隔离后即可正常启动。只有提示权限不足时，才在命令前加上 `sudo`。
 
-> ⚠️ **从旧版升级请先删除**：0.1.0 起应用改名为 **DeepSeek Harness Bar**。旧版 `DSH Bar.app` 与新版共用同一个 bundle identifier，两者同时存在时 macOS 可能打开错的那个——请先删掉旧版再安装。
+> **从旧版升级时，先删除旧应用**：0.1.0 起，应用改名为 **DeepSeek Harness Bar**。旧版 `DSH Bar.app` 与新版共用同一个 bundle identifier；两者同时存在时，macOS 可能打开错的那个。
 
-> 💡 **图形界面方法**：打开「系统设置」→「隐私与安全性」，滑到底部会看到"已阻止使用 DeepSeek Harness Bar"，点击 **"仍要打开"**。
+> 也可以打开「系统设置」→「隐私与安全性」，找到“已阻止使用 DeepSeek Harness Bar”，点击 **“仍要打开”**。
 
 ---
 
-## ✨ 核心特性 / Features
+## 核心特性 / Features
 
-- 🐳 **菜单栏常驻**：系统原生 `🐳` Emoji，自适应深浅色，不占用 Dock 栏位。
-- 🟢 **详细服务状态**：菜单栏与设置页显示检查中、启动中、运行中、停止中、重启中、端口冲突和错误，并提供 PID、运行时长及已安装 DSH 版本。
-- 🔌 **自定义端口**：默认 3080。运行中修改端口会保留旧监听，重启前先检查新端口，避免误停或遗留服务。
-- 🚀 **安静启停 / 重启**：始终使用 `dsh web --no-open` 在后台启动；Start 和 Restart 不会拉起浏览器。
-- 🔐 **只管理自己的服务**：启动时把 `{PID, 端口, 启动时间}` 记录到 `~/.dsh/dsh-bar-service.json`。停止前会校验进程启动时间是否匹配，PID 被复用时拒绝操作。
-- 🔧 **也能关掉终端里启动的服务**：若服务是你自己用 `dsh web` 起的，面板会显示 **Stop External…** 与 **Adopt & Restart**。点击后弹窗列出该进程的 PID、端口和完整命令行，确认后才结束它；`Adopt & Restart` 会顺手改由 DSH Bar 接管，之后 Stop/Restart 无需再回终端。非 Harness 监听者、多进程监听、非当前用户的进程一律拒绝。
-- 🛡️ **重启前先预检，不会"杀了起不来"**：重启前先确认目标端口空闲、DSH CLI 仍然存在。任何一项不过就**保持旧服务原样运行**并说明原因——以前 `dsh` 被卸载或切换 Node 版本导致 shim 失效时，重启会先杀掉正在工作的服务再启动失败。
-- 🚪 **退出语义明确**：`⌘Q` 退出菜单栏图标、**保留后台服务**（下次打开自动重新接管）；需要连服务一起关掉时用 `⌘⌥Q` **Quit & Stop Service…**。外部启动的服务在任何退出路径下都不会被停止。
-- 🔔 **异常退出有通知**：DSH Bar 自己启动的服务意外消失时发系统通知，并做**受控自动重启**（10 分钟内最多 3 次，退避 1s/4s/16s，超过就停下并告知，不会无限重启循环）。手动停止过的服务不会自己复活，外部启动的服务只报告、不重启。
-- 🧯 **通知失效时有降级路径**：ad-hoc 签名的应用每次重建都可能丢失通知授权，所以面板会用橙色显示通知的真实状态和原因，并提供"Fix…"；崩溃与恢复的提示会保留在面板和菜单栏提示里，不依赖通知送达。
-- 🌏 **简体中文界面**：偏好设置里可切换 **自动 / English / 简体中文**，切换后**立即生效、无需重启**（面板、菜单栏、日志窗口同时跟随）。
-- 🌐 **显式打开 Web**：只有点击 Open Web 或使用其全局热键时才打开浏览器，并使用本次启动捕获的认证 URL（token 只留在内存中）。
-- 📜 **内置实时日志**：直接在应用中跟踪 `~/.dsh/logs/dsh-web.log`，支持暂停、搜索、清空当前视图和在 Finder 中定位；只显示完整换行且已隐藏 URL 查询凭证的日志，行首边界不明的首行、未完成行和超长行会保守隐藏。
-- 🗂️ **日志不会无限增长**：由 Bar 新启动的服务通过独立后台写入进程轮转日志；当前文件最多 **10 MiB**，另保留 `.1`、`.2` 两份历史，合计最多 **30 MiB**。即使退出 Bar、保留 Web，仍会轮转；停止 Web 后会排空日志并退出写入进程。升级前已运行的旧服务需要停止后由新版重新启动，才能启用限额；不要直接删除或截断仍有旧进程写入的大日志。
-- 🔎 **DSH 自动检测**：通过 `which dsh` 检测路径和版本，未安装时提供 npm 安装引导。
-- 🪟 **偏好设置面板（`⌘,`）**：
-  - **端口**：修改并一键恢复默认（服务启停/重启期间会锁定，避免端口错配）。
-  - **全局热键**：录制自定义全局热键，录完立即生效。
+- **菜单栏常驻**：使用系统原生 `🐳` Emoji，自适应深浅色，不占用 Dock 栏位。
+- **服务状态**：菜单栏和设置页显示检查中、启动中、运行中、停止中、重启中、端口冲突与错误，以及 PID、运行时长和已安装的 DSH 版本。
+- **自定义端口**：默认 3080。运行中修改端口会保留旧监听；重启前先检查新端口，避免误停或遗留服务。
+- **后台启停和重启**：始终使用 `dsh web --no-open` 在后台启动，Start 和 Restart 不会打开浏览器。
+- **只管理自己的服务**：启动时把 `{PID, 端口, 启动时间}` 写入 `~/.dsh/dsh-bar-service.json`。停止前核对进程启动时间，PID 被复用时拒绝操作。
+- **停止或接管终端启动的服务**：服务由你在终端中用 `dsh web` 启动时，面板会显示 **Stop External…** 和 **Adopt & Restart**。点击后，弹窗会列出 PID、端口和完整命令行，确认后才结束进程。`Adopt & Restart` 会改由 DSH Bar 接管，之后可直接使用 Stop/Restart。非 Harness 监听者、多进程监听和非当前用户的进程都会被拒绝。
+- **重启前检查**：先确认目标端口空闲、DSH CLI 仍然存在。有一项不通过，就保持旧服务原样运行并说明原因。此前，卸载 `dsh` 或切换 Node 版本导致 shim 失效时，可能会先停止旧服务，再启动失败。
+- **退出时保留服务**：`⌘Q` 退出菜单栏应用，保留后台服务，下次打开时自动重新接管。要同时停止服务，使用 `⌘⌥Q` **Quit & Stop Service…**。外部启动的服务在任何退出路径下都不会被停止。
+- **异常退出通知和自动恢复**：DSH Bar 启动的服务意外退出时，会发系统通知并尝试重启。10 分钟内最多 3 次，退避间隔为 1s/4s/16s；超过后停止尝试并告知，不会无限重启。手动停止的服务不会自动恢复；外部启动的服务只报告、不重启。
+- **通知不可用时的提示**：ad-hoc 签名的应用每次重建都可能丢失通知授权。面板会用橙色显示通知状态和原因，并提供 **Fix…**。崩溃和恢复提示也会保留在面板和菜单栏中，不依赖通知送达。
+- **界面语言**：偏好设置中可选择 **自动 / English / 简体中文**。切换立即生效，无需重启；面板、菜单栏和日志窗口会一起切换。
+- **手动打开 Web**：只有点击 Open Web 或使用它的全局热键时，才会打开浏览器。使用本次启动捕获的认证 URL，token 只保留在内存中。
+- **实时日志**：在应用中查看 `~/.dsh/logs/dsh-web.log`，支持暂停、搜索、清空当前视图和在 Finder 中定位。只显示完整换行、已隐藏 URL 查询凭证的日志；行首边界不明的首行、未完成行和超长行会保守隐藏。
+- **日志轮转**：Bar 新启动的服务使用独立后台写入进程轮转日志。当前文件最多 **10 MiB**，另保留 `.1`、`.2` 两份历史，合计最多 **30 MiB**。退出 Bar、保留 Web 后仍会轮转；停止 Web 后，写入进程会排空日志再退出。升级前已运行的旧服务，需要停止并由新版重新启动，才能启用限额。不要直接删除或截断仍有旧进程写入的大日志。
+- **DSH 检测**：通过 `which dsh` 检测路径和版本，未安装时提供 npm 安装引导。
+- **偏好设置（`⌘,`）**：
+  - **端口**：修改端口或恢复默认值。服务启动、停止、重启期间会锁定，避免端口错配。
+  - **全局热键**：录制自定义热键，录完立即生效。
   - **开机自启动**（Launch at login）。
-  - 检查 DSH CLI 路径和版本，并在缺失时提供安装引导。
-  - **安装通道**：从 `latest` / `next` / `alpha` 等 npm dist-tag 中选择要安装的 dsh 版本，当前已安装的通道会标注 `(installed)`；确认后执行 `npm install -g @deepseek-ai/dsh@<tag>`，服务运行中也可安装，提示"重启后生效"且不会自动重启。安装失败时直接显示 npm 的原始报错，不回滚。选择的通道只会被记住，不会自动安装。
-  - 复制本地 Web 地址、打开内置实时日志。
-  - 启动或重启 DSH Bar、启动或重启服务时都不会自动打开 Web 界面。
+  - 查看 DSH CLI 路径和版本，未安装时提供安装引导。
+  - **安装通道**：从 `latest` / `next` / `alpha` 等 npm dist-tag 中选择要安装的 dsh 版本，已安装的通道会标注 `(installed)`。确认后执行 `npm install -g @deepseek-ai/dsh@<tag>`。服务运行中也可安装，会提示“重启后生效”，但不会自动重启。安装失败时显示 npm 原始报错，不回滚。选择的通道只会被记住，不会自动安装。
+  - 复制本地 Web 地址、打开实时日志。
+  - 启动或重启 DSH Bar、启动或重启服务时，都不会自动打开 Web 界面。
 
 ---
 
-## ⌨️ 快捷键速查 / Shortcuts
+## 快捷键 / Shortcuts
 
 ### 全局热键（任何软件处于前台时都有效）
 | 快捷键 | 动作 | 说明 |
 | :--- | :--- | :--- |
-| **`⇧ + ⌘ + D`**<br>*(可在设置中修改)* | 打开 DSH Web | 服务未启动则先在后台拉起，再打开浏览器；已在运行则直接打开 |
+| **`⇧ + ⌘ + D`**<br>*(可在设置中修改)* | 打开 DSH Web | 服务未启动则先在后台启动，再打开浏览器；已在运行则直接打开 |
 
 ### 菜单栏 / 面板内快捷键
 | 快捷键 | 动作 |
@@ -104,44 +104,44 @@ xattr -cr "/Applications/DeepSeek Harness Bar.app"
 | **`⌘ + Q`** | 退出 DSH Bar（保留后台服务） |
 | **`⌘ + ⌥ + Q`** | 退出并停止 DSH Bar 启动的服务 |
 
-> 界面语言在**偏好设置 → 语言**中切换，立即生效。
+界面语言在 **偏好设置 → 语言** 中切换，立即生效。
 
 ---
 
-## 🛠 安装与构建 / Installation & Build
+## 安装与构建 / Installation & Build
 
 ### 方式一：下载 GitHub Release（推荐）
 
-每个 `v*` 标签都会由 GitHub Actions 自动构建同时支持 Apple Silicon 和 Intel 的通用应用，并在 Release 中生成（`0.x` 版本会标记为 Pre-release）：
+每个 `v*` 标签都会触发 GitHub Actions，构建支持 Apple Silicon 和 Intel 的通用应用。Release 中包含以下文件；`0.x` 版本标记为 Pre-release：
 
 - `DSH-Bar-<version>-universal.zip`
 - 对应的 `.sha256` 校验文件
 
-发布包的签名取决于仓库是否配置了 Developer ID secrets：
+发布包的签名和公证取决于仓库配置：
 
 | 配置 | 结果 |
 | :--- | :--- |
-| 已配置 `APPLE_CERT_P12_BASE64`、`APPLE_CERT_PASSWORD`、`APPLE_ID`、`APPLE_TEAM_ID`、`APPLE_APP_PASSWORD` | Developer ID 签名 + 硬化运行时 + 公证 + stapler，Gatekeeper 可直接打开 |
-| 未配置 | 仅 ad-hoc 签名，Release 说明会明确提示需要手动执行 `xattr -cr` |
+| 已配置 `APPLE_CERT_P12_BASE64`、`APPLE_CERT_PASSWORD`、`APPLE_ID`、`APPLE_TEAM_ID`、`APPLE_APP_PASSWORD` | 完成 Developer ID 签名、硬化运行时、公证和 stapler 后发布，Gatekeeper 可直接打开 |
+| 未配置 Developer ID 证书 | 仅 ad-hoc 签名；Release 说明会提示需要手动执行 `xattr -cr` |
 
 #### 自动更新（Sparkle）
 
-应用内置 Sparkle 2 自动更新：每天后台检查一次（`SUScheduledCheckInterval` = 86400），发现新版时弹窗由用户确认安装（不静默更新）。菜单栏 **Check for Updates…** 与偏好设置 → **软件更新** 可随时手动检查。
+应用使用 Sparkle 2，每天在后台检查一次更新（`SUScheduledCheckInterval` = 86400）。发现新版后，由用户确认安装，不静默更新。也可以从菜单栏 **Check for Updates…** 或偏好设置 → **软件更新** 手动检查。
 
-发布链路另外需要：
+发布自动更新还需要以下配置：
 
 | 配置 | 用途 |
 | :--- | :--- |
-| Secret `SPARKLE_PRIVATE_ED_KEY` | EdDSA 私钥，用于签署 appcast.xml（公钥已写入 `Info.plist` 的 `SUPublicEDKey`）。缺失时 release 工作流在生成 appcast 一步直接失败 |
-| 仓库 Settings → Pages → Source = **GitHub Actions** | 可选镜像：仅从 `main` 手动触发发布时运行 `deploy-appcast`，标签发布跳过镜像；应用更新不依赖 Pages |
+| Secret `SPARKLE_PRIVATE_ED_KEY` | EdDSA 私钥，用于生成带下载包签名的 appcast.xml。公钥在 `Info.plist` 的 `SUPublicEDKey` 中；缺少私钥时，release 工作流会在生成 appcast 这一步失败 |
+| 仓库 Settings → Pages → Source = **GitHub Actions** | 可选的 Pages 镜像。仅从 `main` 手动触发发布时运行 `deploy-appcast`；标签发布跳过镜像，应用更新不依赖 Pages |
 
-应用的 `SUFeedURL` 为 [最新正式版的 appcast](https://github.com/donald-trump86/dsh-bar-macos/releases/latest/download/appcast.xml)。该地址经 GitHub 控制的 HTTPS 重定向获取 Release 附件，不经过 Pages 自定义域名或 Cloudflare 人机验证。每个正式版 Release 都必须包含 `appcast.xml`；下载包仍使用带版本标签的固定 URL。
+`SUFeedURL` 指向 [最新正式版的 appcast](https://github.com/donald-trump86/dsh-bar-macos/releases/latest/download/appcast.xml)，通过 GitHub 的 HTTPS 重定向读取 Release 附件，不经过 Pages 自定义域名或 Cloudflare 人机验证。每个正式版 Release 都必须带有 `appcast.xml`；下载包的 URL 使用固定版本标签。
 
-appcast 由 release 工作流在最终打包后用 `Vendor/Sparkle/bin/generate_appcast` 生成，包含下载包的 EdDSA 签名；若配置了 Developer ID 与公证凭据，则先完成公证和 staple。未配置时仍为 ad-hoc 签名，EdDSA 校验不等于 Apple 公证。
+release 工作流完成最终打包后，使用 `Vendor/Sparkle/bin/generate_appcast` 生成 appcast，写入下载包的 EdDSA 签名。配置了 Developer ID 和公证凭据时，会先完成公证和 staple；未配置时，安装包仍是 ad-hoc 签名。**EdDSA 校验不等于 Apple 公证。**
 
-**1.0.0 用户需手动下载安装 1.0.1 一次**：1.0.0 内嵌的 Pages 更新源受到自定义域名重定向影响；1.0.1 起使用上述 Releases 更新源。
+**1.0.0 用户需要手动下载安装 1.0.1 一次。** 1.0.0 的 Pages 更新源受到自定义域名重定向影响，1.0.1 起改用上述 Releases 更新源。
 
-发布前可在本地复现同样的产物：
+发布前可以在本地编译。下面第二条命令只做 Developer ID 签名，不包含公证和 staple：
 
 ```bash
 VERSION=1.0.1 ./build.sh          # 通用二进制 + ad-hoc 签名
@@ -166,17 +166,17 @@ open "build/DeepSeek Harness Bar.app"
 
 ---
 
-## ✅ 提交前自查 / Before You Commit
+## 提交前检查 / Before You Commit
 
 ```bash
 make check
 ```
 
-校验中英文案 key 是否一一对应、`build.sh` 的应用名与 `Info.plist` 是否一致、README 里的路径是否还能用。CI 也会跑同一份脚本。
+这会检查中英文案的 key 是否一致、`build.sh` 与 `Info.plist` 中的应用名是否一致，以及 README 中的路径是否有效。CI 运行同一份检查脚本。
 
 ---
 
-## 📂 项目结构 / Project Structure
+## 项目结构 / Project Structure
 
 ```text
 dsh-bar-macos/
@@ -214,7 +214,7 @@ dsh-bar-macos/
 
 ---
 
-## 📄 开源许可证 / License
+## 开源许可证 / License
 
-本项目基于 [MIT License](LICENSE) 开源。
+本项目使用 [MIT License](LICENSE) 开源。
 欢迎提 Issue 或 PR。
