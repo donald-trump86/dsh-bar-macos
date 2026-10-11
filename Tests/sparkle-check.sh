@@ -188,4 +188,28 @@ else
     fail "DashboardWindow drifted from run-checks.sh invariants:$INV_DRIFT"
 fi
 
+# 10. The appcast is the one artifact users' installs consume directly: a
+#     missing EdDSA signature or a feed deployed but never regenerated shows up
+#     only as "you're up to date" on an old install months later. The checks
+#     pin the sign-with-secret-stdin step, the release-asset backup upload and
+#     the Pages deploy job — the three links where the feed can silently rot.
+WF=".github/workflows/release.yml"
+if grep -q -- '--ed-key-file -' "$WF" \
+        && grep -q -- '--download-url-prefix' "$WF"; then
+    pass "release workflow signs the appcast from the secret key over stdin"
+else
+    fail "release.yml must run generate_appcast with --ed-key-file - and --download-url-prefix"
+fi
+if grep -q 'dist/${ZIP_NAME%.zip}.html' "$WF"; then
+    pass "release notes are also written as an HTML fragment for the appcast"
+else
+    fail "release.yml must write dist/\${ZIP_NAME%.zip}.html for generate_appcast --embed-release-notes"
+fi
+if grep -q 'deploy-appcast:' "$WF" \
+        && grep -q 'actions/deploy-pages' "$WF"; then
+    pass "appcast deploys to GitHub Pages from its own job"
+else
+    fail "release.yml needs a deploy-appcast job using actions/deploy-pages"
+fi
+
 exit $FAILED

@@ -190,6 +190,46 @@ jobs:
           } > "$NOTES"
           cat "$NOTES"
 
+          # The same notes as an HTML fragment (no DOCTYPE/body):
+          # generate_appcast embeds it verbatim in the feed's CDATA.
+          NOTES_HTML="dist/${ZIP_NAME%.zip}.html"
+          {
+            printf '<h3>Installation</h3>\n'
+            printf '<ol>\n'
+            printf '<li>Download and unzip <code>%s</code>.</li>\n' "$ZIP_NAME"
+            printf '<li>Delete any older <strong>DSH Bar.app</strong> first. It shares this app\x27s bundle identifier, and leaving both installed makes macOS open the wrong one.</li>\n'
+            printf '<li>Move <strong>DeepSeek Harness Bar.app</strong> into <code>/Applications</code> and open it.</li>\n'
+            printf '<li>Verify the download against <code>%s.sha256</code>.</li>\n' "$ZIP_NAME"
+            printf '</ol>\n'
+            if [[ "$SIGNED" == "true" ]]; then
+              printf '<p>This build is signed with a Developer ID certificate and notarized by Apple.</p>\n'
+            else
+              printf '<p><strong>This build is not notarized.</strong> macOS may report it as damaged after download. Clear the quarantine attribute first:</p>\n'
+              printf '<pre><code>xattr -cr "/Applications/DeepSeek Harness Bar.app"</code></pre>\n'
+            fi
+          } > "$NOTES_HTML"
+
+      - name: Generate EdDSA-signed appcast
+        env:
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          ZIP_NAME: ${{ steps.meta.outputs.zip }}
+          SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${SPARKLE_PRIVATE_ED_KEY:-}" || { echo "SPARKLE_PRIVATE_ED_KEY missing" >&2; exit 1; }
+          mkdir -p dist/appcast-input
+          cp "dist/$ZIP_NAME" dist/appcast-input/
+          cp "dist/${ZIP_NAME%.zip}.html" dist/appcast-input/
+          # The signing key travels over stdin: it never lands on disk or in argv.
+          echo "$SPARKLE_PRIVATE_ED_KEY" | ./Vendor/Sparkle/bin/generate_appcast \
+              --ed-key-file - \
+              --embed-release-notes \
+              --download-url-prefix "https://github.com/${GH_REPO}/releases/download/${TAG}/" \
+              -o appcast.xml dist/appcast-input
+          cp dist/appcast-input/appcast.xml dist/appcast.xml
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
@@ -197,6 +237,13 @@ jobs:
           path: |
             dist/${{ steps.meta.outputs.zip }}
             dist/${{ steps.meta.outputs.zip }}.sha256
+          if-no-files-found: error
+
+      - name: Upload appcast artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: appcast
+          path: dist/appcast.xml
           if-no-files-found: error
 
       - name: Create or update GitHub Release
@@ -210,16 +257,44 @@ jobs:
           set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" \
-              "dist/$ZIP_NAME" "dist/$ZIP_NAME.sha256" --clobber
+              "dist/$ZIP_NAME" "dist/$ZIP_NAME.sha256" "dist/appcast.xml" --clobber
           else
             prerelease_args=()
             if [[ "$TAG" == v0.* ]]; then
               prerelease_args+=(--prerelease)
             fi
             gh release create "$TAG" \
-              "dist/$ZIP_NAME" "dist/$ZIP_NAME.sha256" \
+              "dist/$ZIP_NAME" "dist/$ZIP_NAME.sha256" "dist/appcast.xml" \
               --verify-tag \
               --title "DeepSeek Harness Bar $TAG" \
               --notes-file dist/release-notes.md \
               "${prerelease_args[@]}"
           fi
+
+  # The feed is deployed last and only from the release job's signed output:
+  # users' installed apps read appcast.xml from the Pages URL declared in
+  # SUFeedURL, so a half-deployed or stale feed means silent update rot.
+  deploy-appcast:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download signed appcast
+        uses: actions/download-artifact@v8
+        with:
+          name: appcast
+          path: site
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
