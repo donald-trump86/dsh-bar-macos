@@ -132,4 +132,12 @@ else
     fail "install pipe check failed — run python3 $SCRIPT_DIR/install-pipe-check.py to see why"
 fi
 
+# 11. The vendored Sparkle framework must stay complete and universal, and the
+#     update pipeline must keep its signing and wiring invariants.
+if bash "$SCRIPT_DIR/sparkle-check.sh"; then
+    pass "vendored Sparkle framework and auto-update integration invariants"
+else
+    fail "sparkle check failed — run bash $SCRIPT_DIR/sparkle-check.sh to see why"
+fi
+
 exit $FAILED

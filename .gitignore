@@ -13,6 +13,9 @@ dist/
 *.app.dSYM
 DerivedData/
 
+# Sparkle research material (the framework itself is vendored under Vendor/)
+.sparkle-research/
+
 # Xcode
 *.xcodeproj/*
 !*.xcodeproj/project.pbxproj
