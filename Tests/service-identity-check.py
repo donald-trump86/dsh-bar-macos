@@ -24,7 +24,8 @@ models = extract("enum ServicePhase:", "") + "\n" + extract("struct ServiceSnaps
 members = [extract(marker) for marker in (
     "private enum ProbeResult", "private enum StopResult",
     "private struct ManagedServiceRecord", "private func preflightRestart(",
-    "private func updateSnapshot(", "func checkStatus(", "private func probe(",
+    "private func updateSnapshot(", "func performWhenLifecycleIdle(",
+    "private func scheduleLifecycleIdleActions(", "func checkStatus(", "private func probe(",
     "private func applyProbe(", "private func saveManagedRecord(",
     "private func clearManagedRecord(", "private func finishStop(",
     "func stopService(", "private func handleUnexpectedExit(",
@@ -38,7 +39,7 @@ members = [extract(marker) for marker in (
 if "    private func matchesManagedIdentity(" in SOURCE:
     members.append(extract("private func matchesManagedIdentity("))
 constants = "\n".join(re.findall(
-    r"^    (?:private static let harnessMarkers|static let autoRestart(?:MaxAttempts|Window|Backoff)).*$",
+    r"^    (?:private static let harnessMarkers|static let autoRestart(?:MaxAttempts|Window|Backoff)|private var lifecycleIdle(?:Actions|DrainScheduled)).*$",
     SOURCE, re.M))
 # The harness exposes members to assertions; function bodies are unchanged.
 members = "\n".join(members).replace("private ", "")

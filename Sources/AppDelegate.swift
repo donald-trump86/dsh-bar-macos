@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Set by `Quit & Stop Service…` so `applicationShouldTerminate` knows the
     /// user asked for the service to go away too, and can wait for the stop.
     private var pendingQuitStopsService = false
+    private var terminationReplyPending = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
@@ -81,15 +82,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// icon disappearing should mean for a background console), so nothing is
     /// stopped here. `Quit & Stop Service…` opts into the other behaviour.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if pendingQuitStopsService {
-            pendingQuitStopsService = false
-            ServiceManager.shared.stopServiceForQuit { _, _ in
+        guard !terminationReplyPending else { return .terminateLater }
+        terminationReplyPending = true
+        let stoppingService = pendingQuitStopsService
+        pendingQuitStopsService = false
+        ServiceManager.shared.performWhenLifecycleIdle {
+            let reply = {
+                ServiceManager.shared.prepareForTermination()
+                self.terminationReplyPending = false
                 NSApplication.shared.reply(toApplicationShouldTerminate: true)
             }
-            return .terminateLater
+            if stoppingService {
+                ServiceManager.shared.stopServiceForQuit { _, _ in reply() }
+            } else {
+                reply()
+            }
         }
-        ServiceManager.shared.prepareForTermination()
-        return .terminateNow
+        return .terminateLater
     }
 
     private func setupStatusItem() {

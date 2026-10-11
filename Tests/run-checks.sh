@@ -155,4 +155,11 @@ else
     fail "update availability check failed — run python3 $SCRIPT_DIR/update-availability-check.py to see why"
 fi
 
+# 14. Quit/relaunch must settle lifecycle work before losing managed identity.
+if python3 "$SCRIPT_DIR/service-termination-check.py"; then
+    pass "quit and updater relaunch settle service lifecycle without losing ownership"
+else
+    fail "service termination check failed — run python3 $SCRIPT_DIR/service-termination-check.py to see why"
+fi
+
 exit $FAILED

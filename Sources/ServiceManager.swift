@@ -55,6 +55,8 @@ final class ServiceManager {
     var isRunning: Bool { snapshot.isRunning }
 
     private var statusObservers: [UUID: (ServiceSnapshot) -> Void] = [:]
+    private var lifecycleIdleActions: [() -> Void] = []
+    private var lifecycleIdleDrainScheduled = false
     private var portObserverToken: UUID?
     private var timer: Timer?
     private var wakeObserver: NSObjectProtocol?
@@ -204,6 +206,33 @@ final class ServiceManager {
         mutation(&snapshot)
         for observer in Array(statusObservers.values) {
             observer(snapshot)
+        }
+        scheduleLifecycleIdleActions()
+    }
+
+    /// Wait for ownership persistence/cleanup before quit or update relaunch.
+    /// Dispatch even when idle, so termination never replies before returning.
+    func performWhenLifecycleIdle(_ action: @escaping () -> Void) {
+        precondition(Thread.isMainThread)
+        lifecycleIdleActions.append(action)
+        scheduleLifecycleIdleActions()
+    }
+
+    private func scheduleLifecycleIdleActions() {
+        precondition(Thread.isMainThread)
+        guard !snapshot.phase.isBusy, !lifecycleIdleActions.isEmpty,
+              !lifecycleIdleDrainScheduled else { return }
+        lifecycleIdleDrainScheduled = true
+        DispatchQueue.main.async {
+            defer {
+                self.lifecycleIdleDrainScheduled = false
+                self.scheduleLifecycleIdleActions()
+            }
+            // Observers or earlier actions may have started another operation.
+            while !self.snapshot.phase.isBusy, !self.lifecycleIdleActions.isEmpty {
+                let action = self.lifecycleIdleActions.removeFirst()
+                action()
+            }
         }
     }
 

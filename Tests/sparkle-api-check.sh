@@ -20,14 +20,62 @@ pass() { echo "ok    $1"; }
 #    the default location is not writable in sandboxed or containerized runs.
 export CLANG_MODULE_CACHE_PATH="${TMPDIR:-/tmp}/dshbar-sparkle-api-modulecache"
 mkdir -p "$CLANG_MODULE_CACHE_PATH"
+# Isolate the application's service dependency, not Sparkle's actual types.
+# The lifecycle probe separately exercises the real ServiceManager methods.
+API_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dshbar-sparkle-api.XXXXXX")"
+API_TMP_RESOLVED="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+cleanup_api_fixture() {
+    local resolved
+    resolved="$(cd "${API_DIR:?}" && pwd -P)" || return
+    case "$resolved" in
+        "$API_TMP_RESOLVED"/dshbar-sparkle-api.*) rm -rf -- "$resolved" ;;
+        *) echo "Refusing to remove unexpected API fixture: $resolved" >&2 ;;
+    esac
+}
+trap cleanup_api_fixture EXIT
+cat > "$API_DIR/ServiceManagerStub.swift" <<'SWIFT'
+import Foundation
+final class ServiceManager {
+    static let shared = ServiceManager()
+    struct Phase { var isBusy = false }
+    struct Snapshot { var phase = Phase() }
+    let snapshot = Snapshot()
+    func performWhenLifecycleIdle(_ action: @escaping () -> Void) {}
+}
+SWIFT
 if xcrun swiftc -typecheck -parse-as-library \
         -module-name SparkleAPICheck \
         -F Vendor \
-        Sources/UpdateManager.swift 2>/tmp/sparkle-api-check.err; then
+        Sources/UpdateManager.swift "$API_DIR/ServiceManagerStub.swift" \
+        2>"$API_DIR/typecheck.err"; then
     pass "UpdateManager.swift typechecks against the vendored Sparkle API"
 else
     fail "UpdateManager.swift does not compile against vendored Sparkle:"
-    sed 's/^/      /' /tmp/sparkle-api-check.err
+    sed 's/^/      /' "$API_DIR/typecheck.err"
+fi
+
+# An optional Objective-C delegate method can silently fail to match. Compile
+# the actual framework selector and check exposure without creating the updater
+# controller (it is lazy), so this probe starts no update/network operations.
+cat > "$API_DIR/DelegateProbe.swift" <<'SWIFT'
+import Cocoa
+import Sparkle
+@main enum DelegateProbe {
+    @MainActor static func main() {
+        let selector = #selector(SPUUpdaterDelegate.updater(_:shouldPostponeRelaunchForUpdate:untilInvokingBlock:))
+        precondition(UpdateManager.shared.responds(to: selector), "Sparkle relaunch delegate selector is not exposed")
+    }
+}
+SWIFT
+if xcrun swiftc -parse-as-library -module-name SparkleDelegateCheck \
+        -F Vendor -framework Sparkle -Xlinker -rpath -Xlinker "$PWD/Vendor" \
+        Sources/UpdateManager.swift "$API_DIR/ServiceManagerStub.swift" \
+        "$API_DIR/DelegateProbe.swift" -o "$API_DIR/delegate-check" \
+        2>"$API_DIR/delegate.err" && "$API_DIR/delegate-check"; then
+    pass "UpdateManager exposes the real optional Sparkle relaunch delegate selector"
+else
+    fail "Sparkle relaunch delegate selector verification failed"
+    sed 's/^/      /' "$API_DIR/delegate.err"
 fi
 
 # 2. The menu item must reach the wrapper, with an explicit target. A missing

@@ -11,19 +11,17 @@ import Cocoa
 import Sparkle
 
 @MainActor
-final class UpdateManager: NSObject, NSMenuItemValidation {
+final class UpdateManager: NSObject, NSMenuItemValidation, SPUUpdaterDelegate {
     static let shared = UpdateManager()
 
-    let controller: SPUStandardUpdaterController
+    // Lazy construction permits self as delegate after NSObject initialization.
+    private(set) lazy var controller = SPUStandardUpdaterController(
+        startingUpdater: true,
+        updaterDelegate: self,
+        userDriverDelegate: nil
+    )
 
     private override init() {
-        // startingUpdater: true — SPUStandardUpdaterController schedules the
-        // background checks itself from the Info.plist SU* settings.
-        controller = SPUStandardUpdaterController(
-            startingUpdater: true,
-            updaterDelegate: nil,
-            userDriverDelegate: nil
-        )
         super.init()
     }
 
@@ -46,6 +44,16 @@ final class UpdateManager: NSObject, NSMenuItemValidation {
     @objc func checkForUpdates(_ sender: Any?) {
         guard canCheckForUpdates else { return }
         controller.checkForUpdates(sender)
+    }
+
+    func updater(
+        _ updater: SPUUpdater,
+        shouldPostponeRelaunchForUpdate update: SUAppcastItem,
+        untilInvokingBlock installHandler: @escaping () -> Void
+    ) -> Bool {
+        guard ServiceManager.shared.snapshot.phase.isBusy else { return false }
+        ServiceManager.shared.performWhenLifecycleIdle(installHandler)
+        return true
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
