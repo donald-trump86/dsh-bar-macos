@@ -263,6 +263,10 @@ jobs:
             gh release upload "$TAG" \
               "dist/$ZIP_NAME" "dist/$ZIP_NAME.sha256" "dist/appcast.xml" --clobber
           else
+            # macOS runners run bash 3.2, where expanding an empty array is an
+            # "unbound variable" error under `set -u` — every v0.* release
+            # filled this array, so the first stable tag was where it surfaced.
+            # Always give the expansion a value to fall back on.
             prerelease_args=()
             if [[ "$TAG" == v0.* ]]; then
               prerelease_args+=(--prerelease)
@@ -272,7 +276,7 @@ jobs:
               --verify-tag \
               --title "DeepSeek Harness Bar $TAG" \
               --notes-file dist/release-notes.md \
-              "${prerelease_args[@]}"
+              ${prerelease_args[@]+"${prerelease_args[@]}"}
           fi
 
   # The feed is deployed last and only from the release job's signed output:

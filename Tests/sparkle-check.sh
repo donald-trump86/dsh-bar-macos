@@ -229,4 +229,67 @@ else
     fail "the appcast step must assert dist/appcast-input/appcast.xml exists before copying"
 fi
 
+# 12. The release step runs under macOS bash 3.2, where expanding an *empty*
+#     array — `"${prerelease_args[@]}"` — is an "unbound variable" error under
+#     `set -u`. Every v0.* tag filled that array with --prerelease, so the bug
+#     stayed hidden until the first stable release (v1.0.0) died in the very
+#     last step, after the notarization wait had been spent. This runs the real
+#     step under /bin/bash with a stub gh and checks both branches.
+REL_STEP="$(awk '
+    /^      - name: Create or update GitHub Release[[:space:]]*$/ { in_step = 1 }
+    in_step && /^        run: \|/ { in_run = 1; next }
+    in_run && /^      - / { exit }
+    in_run && /^  [^ ]/ { exit }
+    in_run { sub(/^          /, ""); print }
+' "$WF" 2>/dev/null || true)"
+if [[ -z "$REL_STEP" ]]; then
+    fail "could not extract the 'Create or update GitHub Release' step from $WF"
+else
+    REL_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dshbar-release-step.XXXXXX")"
+    printf '%s\n' "$REL_STEP" > "$REL_DIR/step.sh"
+
+    # Runs the extracted step with a stub gh; prints "<rc>|<gh args>".
+    run_release_step() {
+        local tag="$1" d="$2"
+        rm -rf "$d"; mkdir -p "$d/bin" "$d/dist"
+        : > "$d/dist/DSH-Bar-1.0.0-universal.zip"
+        : > "$d/dist/DSH-Bar-1.0.0-universal.zip.sha256"
+        : > "$d/dist/appcast.xml"
+        : > "$d/dist/release-notes.md"
+        cat > "$d/bin/gh" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "$GH_ARGS_FILE"
+if [[ "$1" == "release" && "$2" == "view" ]]; then exit 1; fi
+exit 0
+STUB
+        chmod +x "$d/bin/gh"
+        local rc=0
+        ( cd "$d" && PATH="$d/bin:$PATH" GH_ARGS_FILE="$d/args.txt" GH_TOKEN=x \
+              GH_REPO=donald-trump86/dsh-bar-macos TAG="$tag" \
+              ZIP_NAME=DSH-Bar-1.0.0-universal.zip /bin/bash "$REL_DIR/step.sh" ) \
+            >/dev/null 2>&1 || rc=$?
+        echo "$rc|$(cat "$d/args.txt" 2>/dev/null | tr '\n' ' ')"
+    }
+
+    STABLE="$(run_release_step v1.0.0 "$REL_DIR/stable")"
+    PRE="$(run_release_step v0.9.0 "$REL_DIR/pre")"
+    rm -rf "$REL_DIR"
+
+    if [[ "$STABLE" == 0\|* && "$STABLE" == *"release create"* ]]; then
+        pass "release step creates a stable release under bash 3.2 (empty prerelease args)"
+    else
+        fail "the release step fails under macOS bash 3.2 for a stable tag (rc|args = '$STABLE') — \${arr[@]} on an empty array is unbound under set -u"
+    fi
+    if [[ "$STABLE" != *"--prerelease"* ]]; then
+        pass "a v1.0.0 tag is not marked pre-release"
+    else
+        fail "a stable tag must not pass --prerelease (args = '$STABLE')"
+    fi
+    if [[ "$PRE" == 0\|* && "$PRE" == *"--prerelease"* ]]; then
+        pass "v0.* tags still create a pre-release"
+    else
+        fail "v0.* tags must still pass --prerelease (rc|args = '$PRE')"
+    fi
+fi
+
 exit $FAILED
