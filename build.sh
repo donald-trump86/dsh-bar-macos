@@ -49,6 +49,7 @@ SOURCE_FILES=(
     Sources/ExternalServicePrompt.swift
     Sources/ServiceNotifier.swift
     Sources/Localization.swift
+    Sources/UpdateManager.swift
 )
 COMMON_SWIFT_FLAGS=(
     -O
@@ -56,10 +57,13 @@ COMMON_SWIFT_FLAGS=(
     -parse-as-library
     -module-name DSHBar
     -sdk "$SDK_PATH"
+    -F "$SCRIPT_DIR/Vendor"
     -framework Cocoa
     -framework Carbon
     -framework ServiceManagement
     -framework UserNotifications
+    -framework Sparkle
+    -Xlinker -rpath -Xlinker @loader_path/../Frameworks
 )
 
 mkdir -p build
@@ -106,10 +110,46 @@ if [[ -d Resources ]]; then
     cp -R Resources/. "$BUNDLE_DIR/Contents/Resources/"
 fi
 
+if [[ -d "Vendor/Sparkle.framework" ]]; then
+    echo "==> Embedding Sparkle.framework..."
+    # ditto, not cp -R: the framework's versioned layout is held together by
+    # symlinks, and any flattening breaks the updater at install time.
+    ditto "Vendor/Sparkle.framework" "$BUNDLE_DIR/Contents/Frameworks/Sparkle.framework"
+fi
+
 SIGNING_IDENTITY="${SIGNING_IDENTITY:-}"
 ENTITLEMENTS_ARG=()
+SIGN_ARGS=()
 
 xattr -cr "$BUNDLE_DIR"
+
+if [[ -n "$SIGNING_IDENTITY" ]]; then
+    SIGN_ARGS=(--options runtime --timestamp)
+fi
+
+# Sparkle's nested helpers must be re-signed inside-out before the app bundle
+# itself gets signed. Signing the bundle first would invalidate the inner
+# signatures it just received, and no signature order can fix that after the
+# fact. The xpc keeps its entitlements because it needs them to install.
+SPARKLE_FRAMEWORK="$BUNDLE_DIR/Contents/Frameworks/Sparkle.framework"
+if [[ -d "$SPARKLE_FRAMEWORK" ]]; then
+    echo "==> Re-signing nested Sparkle components..."
+    codesign --force ${SIGN_ARGS[@]+"${SIGN_ARGS[@]}"} \
+        --sign "${SIGNING_IDENTITY:--}" \
+        "$SPARKLE_FRAMEWORK/Versions/B/XPCServices/Installer.xpc"
+    codesign --force ${SIGN_ARGS[@]+"${SIGN_ARGS[@]}"} --preserve-metadata=entitlements \
+        --sign "${SIGNING_IDENTITY:--}" \
+        "$SPARKLE_FRAMEWORK/Versions/B/XPCServices/Downloader.xpc"
+    codesign --force ${SIGN_ARGS[@]+"${SIGN_ARGS[@]}"} \
+        --sign "${SIGNING_IDENTITY:--}" \
+        "$SPARKLE_FRAMEWORK/Versions/B/Autoupdate"
+    codesign --force ${SIGN_ARGS[@]+"${SIGN_ARGS[@]}"} \
+        --sign "${SIGNING_IDENTITY:--}" \
+        "$SPARKLE_FRAMEWORK/Versions/B/Updater.app"
+    codesign --force ${SIGN_ARGS[@]+"${SIGN_ARGS[@]}"} \
+        --sign "${SIGNING_IDENTITY:--}" \
+        "$SPARKLE_FRAMEWORK"
+fi
 
 if [[ -n "$SIGNING_IDENTITY" ]]; then
     echo "==> Signing with Developer ID: ${SIGNING_IDENTITY}"
@@ -136,7 +176,7 @@ if [[ "${1:-}" == "install" ]]; then
     DEST="/Applications/${APP_NAME}.app"
     echo "==> Installing to ${DEST}..."
     rm -rf "$DEST"
-    cp -R "$BUNDLE_DIR" "$DEST"
+    ditto "$BUNDLE_DIR" "$DEST"
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$DEST"
     touch "$DEST"
     echo "==> Successfully installed to ${DEST}!"

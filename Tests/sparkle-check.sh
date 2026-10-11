@@ -58,4 +58,56 @@ else
     fail "Vendor/Sparkle/bin is missing:$TOOLS_MISSING"
 fi
 
+# 4. build.sh must link and embed Sparkle. A missing -F or rpath compiles on
+#    the build machine and crashes at launch on user machines; a cp -R embed
+#    flattens the framework's symlinks and the updater fails at install time.
+if grep -q -- '-framework Sparkle' build.sh && grep -q -- '-F "$SCRIPT_DIR/Vendor"' build.sh; then
+    pass "build.sh links Sparkle from the vendored framework"
+else
+    fail "build.sh must compile/link with -F \"$SCRIPT_DIR/Vendor\" and -framework Sparkle"
+fi
+if grep -q '@loader_path/../Frameworks' build.sh; then
+    pass "build.sh records the Frameworks runpath for the packaged app"
+else
+    fail "build.sh must pass -Xlinker -rpath -Xlinker @loader_path/../Frameworks"
+fi
+if grep -q 'ditto .*Sparkle\.framework.*Contents/Frameworks' build.sh; then
+    pass "build.sh embeds Sparkle.framework with ditto (symlinks preserved)"
+else
+    fail "build.sh must embed Sparkle.framework into Contents/Frameworks with ditto, not cp -R"
+fi
+
+# 5. Nested components must be re-signed inside-out in Sparkle's documented
+#    order before the bundle itself is signed, with Downloader.xpc keeping its
+#    entitlements. The failure mode is XPC install/verify errors on user
+#    machines, invisible to any local run.
+L_INST="$(grep -n 'Installer\.xpc' build.sh | head -1 | cut -d: -f1)"
+L_DOWN="$(grep -n 'Downloader\.xpc' build.sh | head -1 | cut -d: -f1)"
+L_AUTO="$(grep -n 'Autoupdate' build.sh | head -1 | cut -d: -f1)"
+L_UPD="$(grep -n 'Updater\.app' build.sh | head -1 | cut -d: -f1)"
+if [[ -n "$L_INST" && -n "$L_DOWN" && -n "$L_AUTO" && -n "$L_UPD" \
+      && "$L_INST" -lt "$L_DOWN" && "$L_DOWN" -lt "$L_AUTO" && "$L_AUTO" -lt "$L_UPD" ]]; then
+    pass "nested Sparkle components are signed inside-out in documented order (Installer → Downloader → Autoupdate → Updater.app)"
+else
+    fail "build.sh must sign Installer.xpc → Downloader.xpc → Autoupdate → Updater.app → framework in that order (found lines: ${L_INST:-none} ${L_DOWN:-none} ${L_AUTO:-none} ${L_UPD:-none})"
+fi
+if tr '\n' ' ' < build.sh | grep -q 'Downloader\.xpc[^.]*--preserve-metadata=entitlements\|--preserve-metadata=entitlements[^.]*Downloader\.xpc'; then
+    pass "Downloader.xpc re-sign preserves its entitlements"
+else
+    fail "Downloader.xpc must be re-signed with --preserve-metadata=entitlements"
+fi
+if grep -E 'codesign[^#]*--deep' build.sh | grep -v -- '--verify' | grep -q .; then
+    fail "build.sh must never sign with --deep (verify is fine)"
+else
+    pass "no codesign sign step uses --deep"
+fi
+
+# 6. The update entry point must be compiled into the app, or the menu wiring
+#    in later tasks fails to link while everything looks green in checks.
+if grep -q 'Sources/UpdateManager\.swift' build.sh; then
+    pass "build.sh compiles Sources/UpdateManager.swift"
+else
+    fail "build.sh must list Sources/UpdateManager.swift in SOURCE_FILES"
+fi
+
 exit $FAILED
