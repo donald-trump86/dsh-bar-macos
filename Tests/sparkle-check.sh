@@ -110,4 +110,42 @@ else
     fail "build.sh must list Sources/UpdateManager.swift in SOURCE_FILES"
 fi
 
+# 7. Info.plist is the updater's contract with installed copies: a wrong feed
+#    URL or public key still builds and runs but every update silently fails
+#    verification or points at nothing. The public key must match the pair
+#    whose private half lives in the CI secret SPARKLE_PRIVATE_ED_KEY.
+PB=/usr/libexec/PlistBuddy
+plist_get() { "$PB" -c "Print :$1" Info.plist 2>/dev/null; }
+
+FEED="$(plist_get SUFeedURL)"
+if [[ "$FEED" == "https://donald-trump86.github.io/dsh-bar-macos/appcast.xml" ]]; then
+    pass "SUFeedURL points at the GitHub Pages appcast"
+else
+    fail "SUFeedURL must be https://donald-trump86.github.io/dsh-bar-macos/appcast.xml (got '${FEED:-unset}')"
+fi
+
+PUBKEY="$(plist_get SUPublicEDKey)"
+if [[ "$PUBKEY" == "bvSoqEB8kgZpyVHBw1OJ5C99IggFVqmOddXaup/Hwv0=" ]]; then
+    pass "SUPublicEDKey matches the generated EdDSA key pair"
+else
+    fail "SUPublicEDKey must be bvSoqEB8kgZpyVHBw1OJ5C99IggFVqmOddXaup/Hwv0= (got '${PUBKEY:-unset}') — it must match the CI secret's key pair"
+fi
+
+for kv in "SUEnableAutomaticChecks:true" "SUAutomaticallyUpdate:false" "SUShowReleaseNotes:true"; do
+    KEY="${kv%%:*}"; WANT="${kv##*:}"
+    GOT="$(plist_get "$KEY")"
+    if [[ "$GOT" == "$WANT" ]]; then
+        pass "$KEY is $WANT"
+    else
+        fail "$KEY must be $WANT (got '${GOT:-unset}')"
+    fi
+done
+
+INTERVAL="$(plist_get SUScheduledCheckInterval)"
+if [[ "$INTERVAL" == "86400" ]]; then
+    pass "SUScheduledCheckInterval is 86400 (daily background check)"
+else
+    fail "SUScheduledCheckInterval must be 86400 (got '${INTERVAL:-unset}')"
+fi
+
 exit $FAILED
