@@ -121,8 +121,9 @@ xattr -cr "/Applications/DeepSeek Harness Bar.app"
 
 | 配置 | 结果 |
 | :--- | :--- |
-| 已配置 `APPLE_CERT_P12_BASE64`、`APPLE_CERT_PASSWORD`、`APPLE_ID`、`APPLE_TEAM_ID`、`APPLE_APP_PASSWORD` | 完成 Developer ID 签名、硬化运行时、公证和 stapler 后发布，Gatekeeper 可直接打开 |
-| 未配置 Developer ID 证书 | 仅 ad-hoc 签名；Release 说明会提示需要手动执行 `xattr -cr` |
+| 已配置 `APPLE_CERT_P12_BASE64`（内含 Developer ID 证书）、`APPLE_CERT_PASSWORD`、`APPLE_KEYCHAIN_PASSWORD`、`APPLE_ID`、`APPLE_TEAM_ID`、`APPLE_APP_PASSWORD` | 完成 Developer ID 签名、硬化运行时、公证和 stapler 后发布，Gatekeeper 可直接打开 |
+| 已配置 `APPLE_CERT_P12_BASE64`（内含自签名证书 `DSH Bar Self-Signing`）、`APPLE_CERT_PASSWORD`、`APPLE_KEYCHAIN_PASSWORD`，且未配置公证凭据 | 用自签名证书发布，应用身份跨版本稳定，系统授权不因更新失效；不做公证，Release 说明会提示需要手动执行 `xattr -cr` |
+| 未配置任何证书 Secrets | 仅 ad-hoc 签名，应用身份每次构建都会变化，系统授权在每次更新后失效；Release 说明会提示需要手动执行 `xattr -cr` |
 
 #### 自动更新（Sparkle）
 
@@ -136,16 +137,41 @@ xattr -cr "/Applications/DeepSeek Harness Bar.app"
 
 `SUFeedURL` 指向 [最新正式版的 appcast](https://github.com/donald-trump86/dsh-bar-macos/releases/latest/download/appcast.xml)，通过 GitHub 的 HTTPS 重定向读取 Release 附件，不经过 Pages 自定义域名或 Cloudflare 人机验证。每个正式版 Release 都必须带有 `appcast.xml`；下载包的 URL 使用固定版本标签。
 
-release 工作流完成最终打包后，使用 `Vendor/Sparkle/bin/generate_appcast` 生成 appcast，写入下载包的 EdDSA 签名。配置了 Developer ID 和公证凭据时，会先完成公证和 staple；未配置时，安装包仍是 ad-hoc 签名。**EdDSA 校验不等于 Apple 公证。**
+release 工作流完成最终打包后，使用 `Vendor/Sparkle/bin/generate_appcast` 生成 appcast，写入下载包的 EdDSA 签名。配置了 Developer ID 和公证凭据时，会先完成公证和 staple；未配置 Developer ID 时，安装包为自签名或 ad-hoc 签名。**EdDSA 校验不等于 Apple 公证。**
 
 **1.0.0 用户需要手动下载安装 1.0.1 一次。** 1.0.0 的 Pages 更新源受到自定义域名重定向影响，1.0.1 起改用上述 Releases 更新源。
 
 发布前可以在本地编译。下面第二条命令只做 Developer ID 签名，不包含公证和 staple：
 
 ```bash
-VERSION=1.0.2 ./build.sh          # 通用二进制 + ad-hoc 签名
+VERSION=1.0.2 ./build.sh          # 通用二进制；未设置 SIGNING_IDENTITY 时自动检测自签名身份，否则 ad-hoc
 VERSION=1.0.2 SIGNING_IDENTITY="Developer ID Application: …" ./build.sh
 ```
+
+#### 稳定权限与自签名证书 / Stable permissions via self-signed certificate
+
+未配置证书时，所有构建都是 ad-hoc 签名，macOS 会把每次更新后的应用当作新身份，辅助功能、自动化、屏幕录制、通知等系统授权随之失效。仓库维护者可以做一次性配置，用一个长期自签名证书固定应用身份，让授权在更新后保留。
+
+维护者设置（只需一次）：
+
+```bash
+./Packaging/create-signing-identity.sh --password '<p12 密码>'
+base64 -i dsh-bar-self-signing.p12
+```
+
+脚本会在登录钥匙串中创建 `DSH Bar Self-Signing` 证书（RSA 2048，有效期 3650 天），并导出 `dsh-bar-self-signing.p12`（已被 `.gitignore` 排除，请勿提交或分享）。将 base64 输出与两个密码配置为 GitHub Secrets：
+
+| Secret | 内容 |
+| :--- | :--- |
+| `APPLE_CERT_P12_BASE64` | 上面 base64 命令的输出 |
+| `APPLE_CERT_PASSWORD` | p12 的密码 |
+| `APPLE_KEYCHAIN_PASSWORD` | CI 导入证书时创建的临时钥匙串密码 |
+
+从下一个 `v*` 标签开始，release 工作流会导入证书并优先使用 Developer ID；没有 Developer ID 时改用自签名身份发布。自签名发布不做公证（notarization），Release 说明会保留 `xattr -cr` 提示。本地 `./build.sh` 在未设置 `SIGNING_IDENTITY` 时也会自动检测登录钥匙串中的 `DSH Bar Self-Signing`。
+
+**从旧 ad-hoc 版本升级到第一个自签名版本时，macOS 会因应用身份变化再询问一次授权；之后更新不再重复询问。**证书有效期为 10 年，到期重新生成后同样只会再经历一次授权询问。
+
+没有该证书的贡献者不受影响：未配置上述 Secrets 时 CI 回退到 ad-hoc 签名，本地开发流程不变。
 
 ### 方式二：从源码编译并安装
 

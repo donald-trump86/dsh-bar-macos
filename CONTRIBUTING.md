@@ -99,6 +99,10 @@ or you put a fork back into every 2-second tick.
   target exists.
 - No unit test target. `make check` is the entire safety net, and it only covers
   the failures that are silent.
-- Local builds default to ad-hoc signing. Releases can use Developer ID signing
-  and Apple notarization when the required credentials are configured. Check the
-  release notes; the README quarantine workaround is for unnotarized builds.
+- Local builds fall back to ad-hoc signing when no signing identity is found;
+  if `DSH Bar Self-Signing` exists in the login keychain, `build.sh` uses it
+  automatically. Releases prefer Developer ID signing with Apple notarization
+  when those credentials are configured, fall back to the self-signed identity
+  when only its secrets are set (stable TCC identity, no notarization), and are
+  ad-hoc otherwise. Check the release notes; the README quarantine workaround
+  is for unnotarized builds.

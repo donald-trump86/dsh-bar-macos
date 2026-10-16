@@ -211,4 +211,57 @@ else
     fail "notes step must branch on signing_mode with three distinct texts"
 fi
 
+# 12. The README is where users discover the self-signed option, so it must
+#     document the whole setup: the identity script, the three secrets the
+#     release workflow imports (the secret names are the CI contract — a
+#     renamed secret only fails the build after the release is tagged), and
+#     the one-time re-auth caveat: upgrading an installed build to the
+#     self-signed cert prompts for permissions one final time, and a user
+#     not warned about that prompt assumes a TCC reset. The greps pin the
+#     stable identifiers (script name, secret names) and never the
+#     bilingual heading text, which is free to be reworded.
+if grep -q 'create-signing-identity.sh' README.md \
+        && grep -q 'APPLE_CERT_P12_BASE64' README.md \
+        && grep -q 'APPLE_CERT_PASSWORD' README.md \
+        && grep -q 'APPLE_KEYCHAIN_PASSWORD' README.md \
+        && grep -Eqi '不再重复|不会再|one final|prompt(s|ed)? once' README.md; then
+    pass "README documents the self-signed setup: creation script, three CI secrets, one-time re-auth"
+else
+    fail "README must document the self-signed setup (create-signing-identity.sh, APPLE_CERT_P12_BASE64, APPLE_CERT_PASSWORD, APPLE_KEYCHAIN_PASSWORD, one-time re-auth caveat)"
+fi
+
+# 13. The README release-signing table must cover all three modes, not the
+#     old Developer-ID/ad-hoc dichotomy: a self-signed release differs from
+#     ad-hoc where users care (permissions stay stable) and from Developer
+#     ID where Gatekeeper cares (un-notarized, so the xattr -cr workaround
+#     applies to it too). 'Developer ID', 'ad-hoc' and 'xattr' all appear
+#     elsewhere in the README, so the greps run on the table region only —
+#     everything from the 发布包的签名和公证取决于仓库配置 intro down to the next
+#     #### heading, filtered to table rows — and the self-signed
+#     requirement is row-level: the 自签名 row itself must carry the
+#     un-notarized caveat (未公证 or xattr), not merely exist in the file.
+SIGNING_TABLE="$(awk '/发布包的签名和公证取决于仓库配置/{f=1;next} /^#### /{f=0} f' README.md 2>/dev/null)"
+TABLE_ROWS="$(grep '^[[:space:]]*|' <<<"$SIGNING_TABLE")"
+DEV_ID_ROW="$(grep 'Developer ID' <<<"$TABLE_ROWS" | grep -E '公证|notarized')"
+SELF_SIGNED_ROW="$(grep -E '自签名|self-signed' <<<"$TABLE_ROWS" | grep -E 'xattr|未公证|not notarized')"
+ADHOC_ROW="$(grep 'ad-hoc' <<<"$TABLE_ROWS")"
+if [[ -n "$TABLE_ROWS" && -n "$DEV_ID_ROW" && -n "$SELF_SIGNED_ROW" && -n "$ADHOC_ROW" ]]; then
+    pass "README signing table covers Developer ID, self-signed and ad-hoc modes"
+else
+    fail "README signing table must cover three modes: Developer ID (公证), 自签名 (未公证 + xattr), ad-hoc"
+fi
+
+# 14. CONTRIBUTING.md's signing note is the only signing guidance many
+#     contributors read, so it must name the self-signed mode (releases are
+#     Developer ID, self-signed or ad-hoc depending on configuration)
+#     instead of the old two-way story. A missing file, or a note with no
+#     signing mention at all, fails: the note exists today and this plan
+#     only extends it.
+if [[ -f CONTRIBUTING.md ]] && grep -qi 'signing' CONTRIBUTING.md \
+        && grep -Eqi '自签名|self-signed' CONTRIBUTING.md; then
+    pass "CONTRIBUTING.md signing note covers the self-signed mode"
+else
+    fail "CONTRIBUTING.md must exist and its signing note must mention the self-signed option (自签名/self-signed)"
+fi
+
 exit $FAILED
