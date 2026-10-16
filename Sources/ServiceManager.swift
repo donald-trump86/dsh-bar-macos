@@ -1446,6 +1446,12 @@ final class ServiceManager {
     etime_seconds() {
       t="$1"
       [ -n "$t" ] || { echo ""; return; }
+      # Validate the complete shape before splitting: Bash otherwise accepts
+      # empty fields, variable names and expressions as arithmetic operands.
+      case "$t" in
+        *-*) [[ "$t" =~ ^[0-9]+-[0-9]+:[0-9]+:[0-9]+$ ]] || { echo ""; return; } ;;
+        *) [[ "$t" =~ ^[0-9]+:[0-9]+(:[0-9]+)?$ ]] || { echo ""; return; } ;;
+      esac
       d=0
       case "$t" in
         *-*) d="${t%%-*}"; t="${t#*-}" ;;
@@ -1454,8 +1460,8 @@ final class ServiceManager {
       set -- $t
       IFS="$oldIFS"
       case $# in
-        3) echo $(( d * 86400 + $1 * 3600 + $2 * 60 + $3 )) ;;
-        2) echo $(( d * 86400 + $1 * 60 + $2 )) ;;
+        3) echo $(( 10#$d * 86400 + 10#$1 * 3600 + 10#$2 * 60 + 10#$3 )) ;;
+        2) echo $(( 10#$d * 86400 + 10#$1 * 60 + 10#$2 )) ;;
         *) echo "" ;;
       esac
     }
@@ -1739,7 +1745,7 @@ final class ServiceManager {
         let settings = SettingsManager.shared
         let status = HotKeyManager.shared.lastRegistrationStatus
         let hotKey = "\(settings.globalHotKeyDisplayString) (\(settings.globalHotKeyModifiers), \(settings.globalHotKeyKeyCode))"
-        let hotKeyState = status.map { "FAILED (OSStatus \($0) — already owned by another app)" } ?? "registered"
+        let hotKeyState = status.map { "FAILED (OSStatus \($0))" } ?? "registered"
 
         var lines = [
             "DeepSeek Harness Bar \(Self.applicationVersion)",

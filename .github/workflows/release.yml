@@ -243,13 +243,6 @@ jobs:
             dist/${{ steps.meta.outputs.zip }}.sha256
           if-no-files-found: error
 
-      - name: Upload appcast artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: appcast
-          path: dist/appcast.xml
-          if-no-files-found: error
-
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -280,30 +273,3 @@ jobs:
               ${prerelease_args[@]+"${prerelease_args[@]}"}
           fi
 
-  # Optional mirror: installed apps use the GitHub Release asset, not Pages.
-  # The protected github-pages environment permits main, not release tags.
-  deploy-appcast:
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
-    needs: release
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Download signed appcast
-        uses: actions/download-artifact@v8
-        with:
-          name: appcast
-          path: site
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v5
-        with:
-          path: site
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v5

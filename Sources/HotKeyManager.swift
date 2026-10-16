@@ -6,20 +6,27 @@ final class HotKeyManager {
     static let shared = HotKeyManager()
 
     typealias HotKeyAction = () -> Void
-    private var actions: [UInt32: HotKeyAction] = [:]
+    private struct Registration {
+        let keyCode: UInt32
+        let modifiers: UInt32
+        let action: HotKeyAction
+    }
+    private var registrations: [UInt32: Registration] = [:]
+    private var registrationErrors: [UInt32: OSStatus] = [:]
     private var hotKeyRefs: [UInt32: EventHotKeyRef] = [:]
-    private var eventHandlerInstalled = false
     private var eventHandler: EventHandlerRef?
+    private var recoveryObservers: [NSObjectProtocol] = []
 
-    /// `RegisterEventHotKey` fails when another app already owns the
-    /// combination, and the UI used to swallow that — the preference showed a
-    /// hotkey that was never live. `OSStatus` is nil while registration is
-    /// known good; anything else means the shortcut is dead.
-    private(set) var lastRegistrationStatus: OSStatus?
+    /// Includes handler installation errors and failed desired registrations.
+    /// Success for one shortcut must not hide another shortcut's failure.
+    var lastRegistrationStatus: OSStatus? {
+        registrationErrors.keys.sorted().first.flatMap { registrationErrors[$0] }
+    }
 
     private init() {}
 
     deinit {
+        stopRecoveryMonitoring()
         for (_, ref) in hotKeyRefs {
             UnregisterEventHotKey(ref)
         }
@@ -29,15 +36,27 @@ final class HotKeyManager {
     }
 
     func register(id: UInt32, keyCode: UInt32, modifiers: UInt32, action: @escaping HotKeyAction) {
+        precondition(Thread.isMainThread)
         unregister(id: id)
-        setupEventHandlerIfNeeded()
+        registrations[id] = Registration(keyCode: keyCode, modifiers: modifiers, action: action)
+        installRegistration(id: id)
+    }
+
+    private func installRegistration(id: UInt32) {
+        guard let registration = registrations[id] else { return }
+        let handlerStatus = setupEventHandlerIfNeeded()
+        guard handlerStatus == noErr else {
+            registrationErrors[id] = handlerStatus
+            NSLog("[HotKeyManager] Failed to install event handler: error code \(handlerStatus)")
+            return
+        }
 
         let hotKeyID = EventHotKeyID(signature: OSType(0x44534842), id: id) // 'DSHB'
         var hotKeyRef: EventHotKeyRef?
 
         let status = RegisterEventHotKey(
-            keyCode,
-            modifiers,
+            registration.keyCode,
+            registration.modifiers,
             hotKeyID,
             GetEventDispatcherTarget(),
             0,
@@ -45,13 +64,41 @@ final class HotKeyManager {
         )
 
         if status == noErr, let ref = hotKeyRef {
-            actions[id] = action
             hotKeyRefs[id] = ref
-            lastRegistrationStatus = nil
+            registrationErrors.removeValue(forKey: id)
         } else {
-            lastRegistrationStatus = status
-            NSLog("[HotKeyManager] Failed to register hotkey id \(id): error code \(status)")
+            if let hotKeyRef { UnregisterEventHotKey(hotKeyRef) }
+            let failure = status == noErr ? OSStatus(paramErr) : status
+            registrationErrors[id] = failure
+            NSLog("[HotKeyManager] Failed to register hotkey id \(id): error code \(failure)")
         }
+    }
+
+    func recoverRegistrations() {
+        precondition(Thread.isMainThread)
+        for id in registrations.keys.sorted() {
+            if let ref = hotKeyRefs.removeValue(forKey: id) {
+                UnregisterEventHotKey(ref)
+            }
+            installRegistration(id: id)
+        }
+    }
+
+    func startRecoveryMonitoring() {
+        precondition(Thread.isMainThread)
+        guard recoveryObservers.isEmpty else { return }
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
+            recoveryObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.recoverRegistrations()
+            })
+        }
+    }
+
+    func stopRecoveryMonitoring() {
+        let center = NSWorkspace.shared.notificationCenter
+        for observer in recoveryObservers { center.removeObserver(observer) }
+        recoveryObservers.removeAll()
     }
 
     /// Asks the system whether a combination is free, without keeping it.
@@ -77,15 +124,16 @@ final class HotKeyManager {
     }
     
     func unregister(id: UInt32) {
-        if let ref = hotKeyRefs[id] {
+        precondition(Thread.isMainThread)
+        if let ref = hotKeyRefs.removeValue(forKey: id) {
             UnregisterEventHotKey(ref)
-            hotKeyRefs.removeValue(forKey: id)
-            actions.removeValue(forKey: id)
         }
+        registrations.removeValue(forKey: id)
+        registrationErrors.removeValue(forKey: id)
     }
     
-    private func setupEventHandlerIfNeeded() {
-        guard !eventHandlerInstalled else { return }
+    private func setupEventHandlerIfNeeded() -> OSStatus {
+        guard eventHandler == nil else { return noErr }
         
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         
@@ -103,7 +151,7 @@ final class HotKeyManager {
             
             if status == noErr {
                 DispatchQueue.main.async {
-                    HotKeyManager.shared.actions[hotKeyID.id]?()
+                    HotKeyManager.shared.registrations[hotKeyID.id]?.action()
                 }
                 return noErr
             }
@@ -119,8 +167,11 @@ final class HotKeyManager {
             &eventHandler
         )
         
-        if status == noErr {
-            eventHandlerInstalled = true
+        if status == noErr, eventHandler != nil {
+            return noErr
         }
+        if let handler = eventHandler { RemoveEventHandler(handler) }
+        eventHandler = nil
+        return status == noErr ? OSStatus(paramErr) : status
     }
 }

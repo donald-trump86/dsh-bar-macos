@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         setupMenu()
         setupHotKeys()
+        HotKeyManager.shared.startRecoveryMonitoring()
 
         // Registration can fail at launch if another app took the shortcut
         // while this one was closed. Say so once, instead of leaving a dead
@@ -88,6 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingQuitStopsService = false
         ServiceManager.shared.performWhenLifecycleIdle {
             let reply = {
+                HotKeyManager.shared.stopRecoveryMonitoring()
                 ServiceManager.shared.prepareForTermination()
                 self.terminationReplyPending = false
                 NSApplication.shared.reply(toApplicationShouldTerminate: true)

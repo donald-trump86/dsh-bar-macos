@@ -162,4 +162,18 @@ else
     fail "service termination check failed — run python3 $SCRIPT_DIR/service-termination-check.py to see why"
 fi
 
+# 15. Exercise the actual stop script with mocked process identities/signals.
+if python3 "$SCRIPT_DIR/service-stop-check.py"; then
+    pass "stop script parses decimal elapsed time and preserves process ownership"
+else
+    fail "service stop check failed — run python3 $SCRIPT_DIR/service-stop-check.py to see why"
+fi
+
+# 16. Keep failed desired shortcuts retryable and release workspace observers.
+if python3 "$SCRIPT_DIR/hotkey-recovery-check.py"; then
+    pass "hotkey handler failures and workspace recovery preserve desired registrations"
+else
+    fail "hotkey recovery check failed — run python3 $SCRIPT_DIR/hotkey-recovery-check.py to see why"
+fi
+
 exit $FAILED

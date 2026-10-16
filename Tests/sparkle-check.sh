@@ -205,11 +205,10 @@ if grep -q 'dist/${ZIP_NAME%.zip}.html' "$WF"; then
 else
     fail "release.yml must write dist/\${ZIP_NAME%.zip}.html for generate_appcast --embed-release-notes"
 fi
-if grep -q 'deploy-appcast:' "$WF" \
-        && grep -q 'actions/deploy-pages' "$WF"; then
-    pass "appcast deploys to GitHub Pages from its own job"
+if grep -q 'deploy-appcast:' "$WF"; then
+    fail "release.yml must not deploy to GitHub Pages (Pages redirects to Cloudflare)"
 else
-    fail "release.yml needs a deploy-appcast job using actions/deploy-pages"
+    pass "appcast deploys to GitHub Releases without Pages dependency"
 fi
 
 # 11. generate_appcast's -o option takes a *path*, not a file name: passing a
@@ -329,13 +328,6 @@ else
     pass "SUFeedURL avoids the redirected Pages domain"
 fi
 
-# Pages is only an optional mirror. Tag runs must not attempt deployments to
-# the branch-protected github-pages environment; the app uses Release assets.
-if grep -Fq 'if: ${{ github.event_name == '\''workflow_dispatch'\'' && github.ref == '\''refs/heads/main'\'' }}' "$WF"; then
-    pass "Pages mirror runs only on manual releases from main"
-else
-    fail "Pages mirror must be gated to workflow_dispatch on main"
-fi
 
 # Documentation must distinguish local ad-hoc builds from notarized releases.
 if grep -Fq '无第三方依赖' README.md || grep -Fq 'no third-party' CONTRIBUTING.md; then

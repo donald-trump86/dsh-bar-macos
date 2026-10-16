@@ -69,6 +69,11 @@ STOP
     }
     func queueDrained() -> Bool { lifecycleIdleActions.isEmpty && !lifecycleIdleDrainScheduled }
 }
+final class HotKeyManager {
+    static let shared = HotKeyManager()
+    var monitorStops = 0
+    func stopRecoveryMonitoring() { monitorStops += 1 }
+}
 final class NSApplication {
     enum TerminateReply { case terminateNow, terminateLater, terminateCancel }
     static let shared = NSApplication()
@@ -76,6 +81,7 @@ final class NSApplication {
     func reply(toApplicationShouldTerminate: Bool) {
         expect(toApplicationShouldTerminate)
         expect(!ServiceManager.shared.snapshot.phase.isBusy, "termination replied during lifecycle")
+        expect(HotKeyManager.shared.monitorStops == 1, "termination must release shortcut recovery once")
         replies += 1
     }
 }
@@ -98,6 +104,7 @@ func reset(_ phase: ServicePhase = .stopped) -> ServiceManager {
     ServiceManager.shared = service
     service.setPhase(phase)
     NSApplication.shared.replies = 0
+    HotKeyManager.shared.monitorStops = 0
     return service
 }
 // Idle callbacks must be asynchronous and exactly once.
@@ -183,6 +190,7 @@ for phase in [ServicePhase.starting, .restarting] {
     expect(quit.applicationShouldTerminate(.shared) == .terminateLater)
     drain()
     expect(NSApplication.shared.replies == 0 && service.stopCalls == 0)
+    expect(HotKeyManager.shared.monitorStops == 0, "shortcut recovery must stay active until final reply")
     service.identitySaved = true
     service.setPhase(.running)
     drain()

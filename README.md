@@ -133,7 +133,6 @@ xattr -cr "/Applications/DeepSeek Harness Bar.app"
 | 配置 | 用途 |
 | :--- | :--- |
 | Secret `SPARKLE_PRIVATE_ED_KEY` | EdDSA 私钥，用于生成带下载包签名的 appcast.xml。公钥在 `Info.plist` 的 `SUPublicEDKey` 中；缺少私钥时，release 工作流会在生成 appcast 这一步失败 |
-| 仓库 Settings → Pages → Source = **GitHub Actions** | 可选的 Pages 镜像。仅从 `main` 手动触发发布时运行 `deploy-appcast`；标签发布跳过镜像，应用更新不依赖 Pages |
 
 `SUFeedURL` 指向 [最新正式版的 appcast](https://github.com/donald-trump86/dsh-bar-macos/releases/latest/download/appcast.xml)，通过 GitHub 的 HTTPS 重定向读取 Release 附件，不经过 Pages 自定义域名或 Cloudflare 人机验证。每个正式版 Release 都必须带有 `appcast.xml`；下载包的 URL 使用固定版本标签。
 
@@ -144,8 +143,8 @@ release 工作流完成最终打包后，使用 `Vendor/Sparkle/bin/generate_app
 发布前可以在本地编译。下面第二条命令只做 Developer ID 签名，不包含公证和 staple：
 
 ```bash
-VERSION=1.0.1 ./build.sh          # 通用二进制 + ad-hoc 签名
-VERSION=1.0.1 SIGNING_IDENTITY="Developer ID Application: …" ./build.sh
+VERSION=1.0.2 ./build.sh          # 通用二进制 + ad-hoc 签名
+VERSION=1.0.2 SIGNING_IDENTITY="Developer ID Application: …" ./build.sh
 ```
 
 ### 方式二：从源码编译并安装
