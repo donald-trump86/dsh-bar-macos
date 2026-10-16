@@ -13,6 +13,9 @@ dist/
 *.app.dSYM
 DerivedData/
 
+# Self-signing identity export (private key material — never commit)
+dsh-bar-self-signing.p12
+
 # Sparkle research material (the framework itself is vendored under Vendor/)
 .sparkle-research/
 

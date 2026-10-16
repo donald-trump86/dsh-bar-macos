@@ -176,4 +176,14 @@ else
     fail "hotkey recovery check failed — run python3 $SCRIPT_DIR/hotkey-recovery-check.py to see why"
 fi
 
+# 17. The self-signing identity tooling must mint a real codesigning identity
+#     into a scratch keychain, round-trip the p12 through openssl, and refuse
+#     to mint twice — that refusal is what keeps TCC permissions stable
+#     across Sparkle updates.
+if bash "$SCRIPT_DIR/signing-check.sh"; then
+    pass "self-signed identity creation and idempotency invariants"
+else
+    fail "signing check failed — run bash $SCRIPT_DIR/signing-check.sh to see why"
+fi
+
 exit $FAILED
