@@ -89,10 +89,14 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN_PATH"
 
           # Accept any codesigning identity in the imported certificate;
-          # prefer Developer ID when both kinds are present.
-          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
-            | awk -F'"' 'NR>1 && $2 != "" {print $2; exit}')"
-          DEVELOPER_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+          # prefer Developer ID when both kinds are present. find-identity
+          # runs WITHOUT -v: -v hides untrusted identities, and a fresh
+          # self-signed import is untrusted until added to a trust store.
+          # Identity lines come first, so the selector takes the first
+          # quoted name without skipping line 1.
+          IDENTITY="$(security find-identity -p codesigning "$KEYCHAIN_PATH" \
+            | awk -F'"' '$2 != "" {print $2; exit}')"
+          DEVELOPER_IDENTITY="$(security find-identity -p codesigning "$KEYCHAIN_PATH" \
             | awk -F'"' '/Developer ID Application/{print $2; exit}')"
           if [[ -z "$IDENTITY" ]]; then
             echo "No codesigning identity found in the imported certificate." >&2
@@ -111,7 +115,7 @@ jobs:
           echo "configured=true" >> "$GITHUB_OUTPUT"
           echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
           echo "keychain=$KEYCHAIN_PATH" >> "$GITHUB_OUTPUT"
-          echo "Signing identity: $IDENTITY (mode emitted above)"
+          echo "Signing identity: $IDENTITY (signing_mode/developer_id go to the step outputs)"
 
       - name: Build universal app
         env:

@@ -168,7 +168,13 @@ fi
 #    first codesigning identity of ANY kind, and only the total absence of an
 #    identity may fail the step; the Developer ID lookup is a preference
 #    applied after that selection, so it may itself be an awk with exit.
-if grep -q 'NR>1 && \$2 != ""' .github/workflows/release.yml \
+#    The selector must NOT use find-identity -v (which hides untrusted
+#    identities — a fresh self-signed import is untrusted) and must NOT
+#    skip line 1 (identity lines come first in find-identity output, so
+#    NR>1 would drop the only identity).
+if grep -q '$2 != ""' .github/workflows/release.yml \
+        && ! grep -q 'NR>1' .github/workflows/release.yml \
+        && ! grep -q 'find-identity -v' .github/workflows/release.yml \
         && grep -q 'No codesigning identity found' .github/workflows/release.yml \
         && ! grep -q 'No Developer ID Application identity found' .github/workflows/release.yml; then
     pass "release.yml selects any codesigning identity, preferring Developer ID"
@@ -201,11 +207,16 @@ fi
 #     it must say permissions survive updates AND still carry the xattr -cr
 #     quarantine instructions (un-notarized build). Three states × two
 #     formats, with quarantine text in the self-signed and ad-hoc branches
-#     of each, means exactly four xattr -cr lines.
+#     of each, means exactly four xattr -cr lines. The greps are scoped to
+#     the notes step (from the SIGNING_MODE env line to the appcast step) so
+#     the 'permissions'/'self-signed' clauses can't be satisfied by the
+#     workflow's permissions block or signing_mode output emissions.
+NOTES_REGION="$(sed -n '/SIGNING_MODE: ${{ steps.signing.outputs.signing_mode }}/,/Generate EdDSA-signed appcast/p' .github/workflows/release.yml)"
 if grep -q 'SIGNING_MODE: ${{ steps.signing.outputs.signing_mode }}' .github/workflows/release.yml \
-        && grep -q 'permissions' .github/workflows/release.yml \
-        && grep -q 'self-signed' .github/workflows/release.yml \
-        && grep -c 'xattr -cr' .github/workflows/release.yml | grep -q '^4$'; then
+        && grep -q 'permissions' <<<"$NOTES_REGION" \
+        && grep -q 'self-signed' <<<"$NOTES_REGION" \
+        && grep -q 'survive updates' <<<"$NOTES_REGION" \
+        && grep -c 'xattr -cr' <<<"$NOTES_REGION" | grep -q '^4$'; then
     pass "notes step renders three signing states incl. xattr for self-signed"
 else
     fail "notes step must branch on signing_mode with three distinct texts"
@@ -262,6 +273,22 @@ if [[ -f CONTRIBUTING.md ]] && grep -qi 'signing' CONTRIBUTING.md \
     pass "CONTRIBUTING.md signing note covers the self-signed mode"
 else
     fail "CONTRIBUTING.md must exist and its signing note must mention the self-signed option (自签名/self-signed)"
+fi
+
+# 15. BEHAVIORAL: the release.yml identity selector must actually resolve
+#     identities at runtime, not just match greps. Structural checks 8-10
+#     missed a real defect (find-identity -v hides untrusted identities and
+#     NR>1 skipped the only identity line) because greps can't execute the
+#     selector. This check runs the exact CI import + selection flow against
+#     three scratch-keychain scenarios: the project's self-signed P12
+#     (untrusted — the -v pitfall), a Developer-ID-named P12, and an empty
+#     keychain (must hard-fail with the exact message). Scratch keychains
+#     only; login.keychain-db is never touched (the helper script owns the
+#     trap-based cleanup).
+if [[ -x Tests/selector-behavior.sh ]] && bash Tests/selector-behavior.sh >/dev/null 2>&1; then
+    pass "identity selector resolves self-signed and Developer ID P12s at runtime"
+else
+    fail "identity selector must resolve the self-signed P12 at runtime (run Tests/selector-behavior.sh for details)"
 fi
 
 exit $FAILED
