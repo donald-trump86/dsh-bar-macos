@@ -162,4 +162,53 @@ else
     fail "DR stability not checkable: identity never minted in check 2"
 fi
 
+# 8. CI must import whichever identity the P12 carries — Developer ID when
+#    present, else the project's self-signed cert — instead of hard-failing on
+#    anything that is not Developer ID. The generic selector must pick the
+#    first codesigning identity of ANY kind, and only the total absence of an
+#    identity may fail the step; the Developer ID lookup is a preference
+#    applied after that selection, so it may itself be an awk with exit.
+if grep -q 'NR>1 && \$2 != ""' .github/workflows/release.yml \
+        && grep -q 'No codesigning identity found' .github/workflows/release.yml \
+        && ! grep -q 'No Developer ID Application identity found' .github/workflows/release.yml; then
+    pass "release.yml selects any codesigning identity, preferring Developer ID"
+else
+    fail "release.yml identity selection must accept any identity (prefer Developer ID)"
+fi
+
+# 9. The import step must classify what it found so later steps can branch:
+#    developer_id gates notarization (self-signed certs cannot be notarized),
+#    signing_mode picks the release-note text.
+if grep -q 'developer_id=' .github/workflows/release.yml \
+        && grep -q 'signing_mode=' .github/workflows/release.yml; then
+    pass "release.yml emits developer_id and signing_mode outputs"
+else
+    fail "release.yml import step must emit developer_id= and signing_mode= outputs"
+fi
+
+# 10. Notarization is only possible for Developer ID identities; running it
+#     for a self-signed release wastes a release and fails at submit. The
+#     gate must be developer_id, not the old configured flag.
+if grep -q "if: steps.signing.outputs.developer_id == 'true'" .github/workflows/release.yml \
+        && ! grep -q "if: steps.signing.outputs.configured == 'true'" .github/workflows/release.yml; then
+    pass "notarize step gated on developer_id"
+else
+    fail "notarize step if: must be steps.signing.outputs.developer_id == 'true'"
+fi
+
+# 11. Release notes must explain three states in BOTH the markdown and the
+#     HTML fragment. The self-signed branch is the one users actually read:
+#     it must say permissions survive updates AND still carry the xattr -cr
+#     quarantine instructions (un-notarized build). Three states × two
+#     formats, with quarantine text in the self-signed and ad-hoc branches
+#     of each, means exactly four xattr -cr lines.
+if grep -q 'SIGNING_MODE: ${{ steps.signing.outputs.signing_mode }}' .github/workflows/release.yml \
+        && grep -q 'permissions' .github/workflows/release.yml \
+        && grep -q 'self-signed' .github/workflows/release.yml \
+        && grep -c 'xattr -cr' .github/workflows/release.yml | grep -q '^4$'; then
+    pass "notes step renders three signing states incl. xattr for self-signed"
+else
+    fail "notes step must branch on signing_mode with three distinct texts"
+fi
+
 exit $FAILED

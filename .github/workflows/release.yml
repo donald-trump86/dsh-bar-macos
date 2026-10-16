@@ -53,10 +53,11 @@ jobs:
           xcrun swiftc --version
           xcrun --sdk macosx --show-sdk-version
 
-      # When the Developer ID secrets are configured the release is signed and
-      # notarized. Without them the build stays ad-hoc signed and the release
-      # notes say so explicitly, so nobody assumes Gatekeeper will accept it.
-      - name: Import Developer ID certificate
+      # When signing secrets are configured the release is signed with whatever
+      # certificate they carry — Developer ID (signed + notarized) or the
+      # project's self-signed cert (stable TCC identity, no notarization).
+      # Without secrets the build stays ad-hoc signed and the notes say so.
+      - name: Import signing certificate
         id: signing
         env:
           CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
@@ -67,13 +68,15 @@ jobs:
           set -euo pipefail
           if [[ -z "${CERT_P12_BASE64:-}" || -z "${CERT_PASSWORD:-}" ]]; then
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "Developer ID secrets are not configured; the app will be ad-hoc signed."
+            echo "developer_id=false" >> "$GITHUB_OUTPUT"
+            echo "signing_mode=ad-hoc" >> "$GITHUB_OUTPUT"
+            echo "Signing secrets are not configured; the app will be ad-hoc signed."
             exit 0
           fi
 
           KEYCHAIN_PATH="$RUNNER_TEMP/dshbar-signing.keychain-db"
           KEYCHAIN_PASS="${KEYCHAIN_PASSWORD:-dshbar-ci}"
-          CERT_PATH="$RUNNER_TEMP/developer-id.p12"
+          CERT_PATH="$RUNNER_TEMP/signing.p12"
 
           printf '%s' "$CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
           security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
@@ -85,18 +88,30 @@ jobs:
             -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH"
 
+          # Accept any codesigning identity in the imported certificate;
+          # prefer Developer ID when both kinds are present.
           IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | awk -F'"' 'NR>1 && $2 != "" {print $2; exit}')"
+          DEVELOPER_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
             | awk -F'"' '/Developer ID Application/{print $2; exit}')"
           if [[ -z "$IDENTITY" ]]; then
-            echo "No Developer ID Application identity found in the imported certificate." >&2
+            echo "No codesigning identity found in the imported certificate." >&2
             exit 1
+          fi
+          if [[ -n "$DEVELOPER_IDENTITY" ]]; then
+            IDENTITY="$DEVELOPER_IDENTITY"
+            echo "developer_id=true" >> "$GITHUB_OUTPUT"
+            echo "signing_mode=developer-id" >> "$GITHUB_OUTPUT"
+          else
+            echo "developer_id=false" >> "$GITHUB_OUTPUT"
+            echo "signing_mode=self-signed" >> "$GITHUB_OUTPUT"
           fi
 
           rm -f "$CERT_PATH"
           echo "configured=true" >> "$GITHUB_OUTPUT"
           echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
           echo "keychain=$KEYCHAIN_PATH" >> "$GITHUB_OUTPUT"
-          echo "Signing identity: $IDENTITY"
+          echo "Signing identity: $IDENTITY (mode emitted above)"
 
       - name: Build universal app
         env:
@@ -131,7 +146,7 @@ jobs:
           (cd dist && shasum -a 256 "$ZIP_NAME" > "$ZIP_NAME.sha256")
 
       - name: Notarize and staple
-        if: steps.signing.outputs.configured == 'true'
+        if: steps.signing.outputs.developer_id == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -166,7 +181,7 @@ jobs:
           TAG: ${{ steps.meta.outputs.tag }}
           VERSION: ${{ steps.meta.outputs.version }}
           ZIP_NAME: ${{ steps.meta.outputs.zip }}
-          SIGNED: ${{ steps.signing.outputs.configured }}
+          SIGNING_MODE: ${{ steps.signing.outputs.signing_mode }}
         shell: bash
         run: |
           set -euo pipefail
@@ -178,8 +193,14 @@ jobs:
             printf '2. Delete any older **DSH Bar.app** first. It shares this app\x27s bundle identifier, and leaving both installed makes macOS open the wrong one.\n'
             printf '3. Move **DeepSeek Harness Bar.app** into `/Applications` and open it.\n'
             printf '4. Verify the download against `%s.sha256`.\n\n' "$ZIP_NAME"
-            if [[ "$SIGNED" == "true" ]]; then
+            if [[ "$SIGNING_MODE" == "developer-id" ]]; then
               printf 'This build is signed with a Developer ID certificate and notarized by Apple.\n'
+            elif [[ "$SIGNING_MODE" == "self-signed" ]]; then
+              printf 'This build is signed with the project\x27s self-signing certificate, so macOS permissions (Accessibility, Automation, Screen Recording) survive updates.\n'
+              printf 'It is not notarized by Apple — clear the quarantine attribute first:\n\n'
+              printf '```bash\nxattr -cr "/Applications/DeepSeek Harness Bar.app"\n```\n'
+              printf '>\n'
+              printf '> Add `sudo` in front only if you get a permission error.\n'
             else
               printf '> **This build is not notarized.** macOS may report it as damaged after download.\n'
               printf '> Clear the quarantine attribute first:\n\n'
@@ -201,8 +222,11 @@ jobs:
             printf '<li>Move <strong>DeepSeek Harness Bar.app</strong> into <code>/Applications</code> and open it.</li>\n'
             printf '<li>Verify the download against <code>%s.sha256</code>.</li>\n' "$ZIP_NAME"
             printf '</ol>\n'
-            if [[ "$SIGNED" == "true" ]]; then
+            if [[ "$SIGNING_MODE" == "developer-id" ]]; then
               printf '<p>This build is signed with a Developer ID certificate and notarized by Apple.</p>\n'
+            elif [[ "$SIGNING_MODE" == "self-signed" ]]; then
+              printf '<p>This build is signed with the project\x27s self-signing certificate, so macOS permissions (Accessibility, Automation, Screen Recording) survive updates. It is not notarized by Apple — clear the quarantine attribute first:</p>\n'
+              printf '<pre><code>xattr -cr "/Applications/DeepSeek Harness Bar.app"</code></pre>\n'
             else
               printf '<p><strong>This build is not notarized.</strong> macOS may report it as damaged after download. Clear the quarantine attribute first:</p>\n'
               printf '<pre><code>xattr -cr "/Applications/DeepSeek Harness Bar.app"</code></pre>\n'
