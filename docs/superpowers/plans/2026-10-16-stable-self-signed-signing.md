@@ -46,7 +46,7 @@
 - Consumes: nothing from earlier tasks.
 - Produces: `create-signing-identity.sh [--keychain PATH] [--keychain-password PW] [--p12-out PATH] [--password PW] [--skip-trust] [--force]`. Defaults: `--keychain login.keychain-db`, `--p12-out ./dsh-bar-self-signing.p12`. On success: identity `DSH Bar Self-Signing` exists in the target keychain as a valid codesigning identity, and the p12 (encrypted with `--password`) exists at `--p12-out`. Task 2's tests invoke this script to mint scratch identities.
 
-- [ ] **Step 1: Write failing checks in `Tests/signing-check.sh` (header comment + section 1)**
+- [x] **Step 1: Write failing checks in `Tests/signing-check.sh` (header comment + section 1)**
 
 Header follows `Tests/sparkle-check.sh` style (`set -uo pipefail`, `fail()`/`pass()`, `cd` to repo root). Section 1 checks:
   1. `bash -n Packaging/create-signing-identity.sh` passes.
@@ -55,12 +55,12 @@ Header follows `Tests/sparkle-check.sh` style (`set -uo pipefail`, `fail()`/`pas
   4. `.gitignore` covers the artifact: `git check-ignore -q dsh-bar-self-signing.p12`.
   Cleanup: `security delete-keychain` on the scratch keychain in a trap.
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `bash Tests/signing-check.sh`
 Expected: FAIL — script does not exist.
 
-- [ ] **Step 3: Implement `Packaging/create-signing-identity.sh`**
+- [x] **Step 3: Implement `Packaging/create-signing-identity.sh`**
 
 Algorithm (signature and flags are fixed above; this is the body outline):
   - `set -euo pipefail`; usage/`--help` text; parse flags. Refuse if `--password` missing.
@@ -72,9 +72,9 @@ Algorithm (signature and flags are fixed above; this is the body outline):
   - Unless `--skip-trust`: `security add-trusted-cert -p codeSigning -k "$KEYCHAIN" cert.pem`; print that macOS will show one authorization dialog when targeting the login keychain.
   - Print next steps: `base64 -i <p12> | pbcopy` → secret `APPLE_CERT_P12_BASE64`; the p12 password → `APPLE_CERT_PASSWORD`; any keychain password → `APPLE_KEYCHAIN_PASSWORD`; note that regenerating the cert later costs one more round of permission prompts.
 
-- [ ] **Step 4: Add `dsh-bar-self-signing.p12` to `.gitignore`; wire `Tests/signing-check.sh` into `Tests/run-checks.sh` as numbered check #17** (same `if bash … then pass … else fail` shape as check #11).
+- [x] **Step 4: Add `dsh-bar-self-signing.p12` to `.gitignore`; wire `Tests/signing-check.sh` into `Tests/run-checks.sh` as numbered check #17** (same `if bash … then pass … else fail` shape as check #11).
 
-- [ ] **Step 5: Run checks; commit**
+- [x] **Step 5: Run checks; commit**
 
 Run: `bash Tests/signing-check.sh && ./Tests/run-checks.sh` — both green.
 Commit: `feat: add self-signed identity creation script and signing checks` (script + tests + .gitignore + run-checks).
@@ -89,7 +89,7 @@ Commit: `feat: add self-signed identity creation script and signing checks` (scr
 - Consumes: `Packaging/create-signing-identity.sh` (test minting), identity CN from Global Constraints.
 - Produces: build behavior later tasks rely on — release.yml passes `SIGNING_IDENTITY` env unchanged; the self-signed path signs nested Sparkle components with the same identity but no runtime/timestamp flags.
 
-- [ ] **Step 1: Append failing checks (section 2) to `Tests/signing-check.sh`**
+- [x] **Step 1: Append failing checks (section 2) to `Tests/signing-check.sh`**
 
 Structural:
   1. `grep -q 'if \[\[ "$SIGNING_IDENTITY" == "Developer ID Application:"\* \]\]' build.sh` (the Developer-ID-only flag branch exists).
@@ -102,23 +102,23 @@ Behavioral (the TCC-stability proof): save current search list (`security list-k
   - Assert the DR contains `anchor` (cert-anchored, not hash-anchored): this is what makes TCC see "the same app" across builds.
   - Ad-hoc-sign `$TMP/bin3` (`codesign --force --sign -`) and assert its DR differs from the certified one.
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `bash Tests/signing-check.sh`
 Expected: FAIL — the identity minting works (section 1), but the build.sh structural greps find no Developer-ID branch and no auto-detect block.
 
-- [ ] **Step 3: Modify `build.sh`**
+- [x] **Step 3: Modify `build.sh`**
 
   - Auto-detect before the existing `SIGN_ARGS` block: when `SIGNING_IDENTITY` is empty, try `security find-identity -v -p codesigning` for an identity named exactly `DSH Bar Self-Signing`; if found, use it and log `==> Using self-signed identity from keychain: …`.
   - Flag selection (replaces the current `if [[ -n "$SIGNING_IDENTITY" ]]` at build.sh:126): `SIGN_ARGS=(--options runtime --timestamp)` only when the identity matches `Developer ID Application:`*; otherwise `SIGN_ARGS=()`. The nested Sparkle re-sign block keeps using the existing `${SIGN_ARGS[@]+"${SIGN_ARGS[@]}"}` expansion, so it picks up the distinction automatically.
   - Final bundle signing: three cases — empty → today's ad-hoc path plus a one-line hint pointing at `Packaging/create-signing-identity.sh`; `Developer ID Application:`* → today's `--options runtime --timestamp --entitlements` command unchanged; anything else → `codesign --force --entitlements "Packaging/DSHBar.entitlements" --sign "$SIGNING_IDENTITY"` (entitlements file is an empty dict; keep for parity, drop runtime/timestamp).
   - Keep the summary line at build.sh:173 printing `$SIGNING_IDENTITY:-ad-hoc}` — still correct in all three cases.
 
-- [ ] **Step 4: Implementer end-to-end verification (not part of run-checks)**
+- [x] **Step 4: Implementer end-to-end verification (not part of run-checks)**
 
 With the scratch identity's keychain in the search list and `SIGNING_IDENTITY` unset: `ARCHS=arm64 CLANG_MODULE_CACHE_PATH=$PWD/build/.modulecache ./build.sh` → build log shows the detected identity; `codesign -dv "build/DeepSeek Harness Bar.app"` reports `Authority=DSH Bar Self-Signing`; `codesign --verify --deep --strict` passes. Then restore the search list. If codesign prompts for key access, the script's `set-key-partition-list` (run with `--keychain-password`) is what avoids it — verify it was run.
 
-- [ ] **Step 5: Run checks; commit**
+- [x] **Step 5: Run checks; commit**
 
 Run: `bash Tests/signing-check.sh && ./Tests/run-checks.sh` — green.
 Commit: `feat: sign builds with stable self-signed identity`.
@@ -133,22 +133,22 @@ Commit: `feat: sign builds with stable self-signed identity`.
 - Consumes: `SIGNING_IDENTITY` env contract from Task 2 (Developer ID → runtime/timestamp; self-signed → plain).
 - Produces: workflow outputs from the import step — `configured` (unchanged), `identity`, `developer_id` (`true|false`), `signing_mode` (`developer-id|self-signed|ad-hoc`).
 
-- [ ] **Step 1: Append failing checks (section 3)**
+- [x] **Step 1: Append failing checks (section 3)**
 
   1. Import step: identity selection must accept any codesigning identity, preferring `Developer ID Application` when both exist (assert the awk/grep no longer matches only `Developer ID Application`).
   2. Import step emits `developer_id=` and `signing_mode=` outputs.
   3. Notarize step's `if:` is `steps.signing.outputs.developer_id == 'true'` (not `configured`).
   4. Notes step branches on `signing_mode` with three distinct texts; the `self-signed` branch mentions that macOS permissions survive updates and still includes the `xattr -cr` quarantine instructions; the `developer-id` branch text is unchanged from today.
 
-- [ ] **Step 2: Run to verify failure** — `bash Tests/signing-check.sh` FAIL on section 3.
+- [x] **Step 2: Run to verify failure** — `bash Tests/signing-check.sh` FAIL on section 3.
 
-- [ ] **Step 3: Modify `.github/workflows/release.yml`**
+- [x] **Step 3: Modify `.github/workflows/release.yml`**
 
   - Import step: after import, list identities in `$KEYCHAIN_PATH`; if none → hard fail (unchanged). Prefer a `Developer ID Application` identity if present, else the first codesigning identity. Emit `identity`, plus `developer_id=true|false` by prefix test, plus `signing_mode` (`developer-id` / `self-signed` / `ad-hoc` when secrets were absent and the step early-exited with `configured=false`).
   - Notarize step: change only its `if:` to `developer_id == 'true'` (self-signed certs cannot be notarized; with a self-signed P12 configured, notarization credentials are intentionally not required).
   - Notes step: switch `SIGNED` env to `SIGNING_MODE="${{ steps.signing.outputs.signing_mode }}"` and render three states in both the markdown and HTML fragments (keep fragments content-identical): `developer-id` → today's sentence; `self-signed` → "Signed with the project's self-signing certificate, so macOS permissions (Accessibility/Automation/Screen Recording) survive updates. Not notarized by Apple — clear the quarantine attribute after download:" + existing `xattr -cr` block; `ad-hoc` → today's not-notarized block.
 
-- [ ] **Step 4: Run checks; commit**
+- [x] **Step 4: Run checks; commit**
 
 Run: `bash Tests/signing-check.sh && ./Tests/run-checks.sh` — green.
 Commit: `feat: release builds signed with self-signed identity`.
@@ -163,16 +163,16 @@ Commit: `feat: release builds signed with self-signed identity`.
 **Interfaces:**
 - Consumes: script CLI from Task 1, secret names from Global Constraints, the one-time re-auth caveat from the spec.
 
-- [ ] **Step 1: Append failing checks (section 4)**
+- [x] **Step 1: Append failing checks (section 4)**
 
   1. README contains a signing/permissions section mentioning: `Packaging/create-signing-identity.sh`, the three secret names (`APPLE_CERT_P12_BASE64`, `APPLE_CERT_PASSWORD`, `APPLE_KEYCHAIN_PASSWORD`), and that switching from an old build to a self-signed one triggers one final permission prompt (之后不再重复).
   2. Run-checks README path check (#2) still passes — any new quoted `*.app` path must be `DeepSeek Harness Bar.app`.
 
-- [ ] **Step 2: Run to verify failure** — FAIL on section 4.
+- [x] **Step 2: Run to verify failure** — FAIL on section 4.
 
-- [ ] **Step 3: Write the README section** (bilingual, following the existing 为什么用它/Why style): why permissions reset today (ad-hoc signature = new app identity per build), the one-time owner setup (run the script → p12 → base64 → three secrets), what CI does from the next tag on, the 10-year cert expiry note (regeneration costs one re-prompt round), and that contributors without the cert are unaffected (ad-hoc fallback).
+- [x] **Step 3: Write the README section** (bilingual, following the existing 为什么用它/Why style): why permissions reset today (ad-hoc signature = new app identity per build), the one-time owner setup (run the script → p12 → base64 → three secrets), what CI does from the next tag on, the 10-year cert expiry note (regeneration costs one re-prompt round), and that contributors without the cert are unaffected (ad-hoc fallback).
 
-- [ ] **Step 4: Run full checks; commit**
+- [x] **Step 4: Run full checks; commit**
 
 Run: `./Tests/run-checks.sh` — green.
 Commit: `docs: self-signed signing setup for stable permissions`.
