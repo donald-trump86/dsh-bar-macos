@@ -96,4 +96,70 @@ else
     fail ".gitignore must cover dsh-bar-self-signing.p12 (private key material)"
 fi
 
+# 5. build.sh must gate --options runtime/--timestamp (notarization flags, and
+#    a hard requirement on an Apple timestamp server) on a Developer ID
+#    identity only. A self-signed identity carrying those flags fails at
+#    signing time on every machine without notarization credentials — the
+#    exact failure this plan exists to prevent.
+if grep -q 'if \[\[ "$SIGNING_IDENTITY" == "Developer ID Application:"\* \]\]' build.sh; then
+    pass "build.sh gates runtime/timestamp flags on Developer ID identities"
+else
+    fail "build.sh must gate runtime/timestamp on 'Developer ID Application:'* identities"
+fi
+
+# 6. With SIGNING_IDENTITY unset, build.sh must look up the long-lived
+#    self-signed identity in the keychain instead of silently ad-hoc
+#    signing — and must tell the user how to create it when absent.
+if grep -q 'security find-identity' build.sh \
+        && grep -q 'create-signing-identity.sh' build.sh; then
+    pass "build.sh auto-detects the self-signed identity and hints at the creation script"
+else
+    fail "build.sh must auto-detect 'DSH Bar Self-Signing' and hint at Packaging/create-signing-identity.sh"
+fi
+
+# 7. Behavioral proof of the whole plan: two binaries signed by the same
+#    self-signed identity must yield an IDENTICAL designated requirement
+#    (what TCC matches on — this is why permissions survive updates), while
+#    an ad-hoc binary's DR is cdhash-based and unique per build. Empirical
+#    notes recorded in the SDD report: DR text comes from `codesign -d -r-`
+#    (-drr prints nothing on this OS), it embeds the binary's identifier so
+#    both copies are signed with a fixed -i to keep the comparison honest,
+#    and a self-signed cert anchors as `certificate leaf = H"…"` rather than
+#    the Apple-CA `anchor` form — the leaf hash is the TCC-stability property.
+#    Signing goes through `codesign --keychain` because the scratch keychain
+#    is deliberately not in the user's keychain search list.
+DR_OK=1
+if [[ "$MINT_OK" -eq 1 ]]; then
+    DR_TMP="$(mktemp -d "${TMPDIR:-/tmp}/dshbar-signing.XXXXXX")"
+    printf 'int main(){return 0;}\n' > "$DR_TMP/m.c"
+    clang -o "$DR_TMP/bin1" "$DR_TMP/m.c" >/dev/null 2>&1 || DR_OK=0
+    clang -o "$DR_TMP/bin2" "$DR_TMP/m.c" >/dev/null 2>&1 || DR_OK=0
+    clang -o "$DR_TMP/bin3" "$DR_TMP/m.c" >/dev/null 2>&1 || DR_OK=0
+    codesign --force --keychain "$KEYCHAIN" -i dshbar-dr-check \
+        --sign "$IDENTITY" "$DR_TMP/bin1" >/dev/null 2>&1 || DR_OK=0
+    codesign --force --keychain "$KEYCHAIN" -i dshbar-dr-check \
+        --sign "$IDENTITY" "$DR_TMP/bin2" >/dev/null 2>&1 || DR_OK=0
+    codesign --force --sign - "$DR_TMP/bin3" >/dev/null 2>&1 || DR_OK=0
+    DR1="$(codesign -d -r- "$DR_TMP/bin1" 2>/dev/null | tr -s '[:space:]' ' ')"
+    DR2="$(codesign -d -r- "$DR_TMP/bin2" 2>/dev/null | tr -s '[:space:]' ' ')"
+    DR3="$(codesign -d -r- "$DR_TMP/bin3" 2>/dev/null | tr -s '[:space:]' ' ')"
+    DR_BASE="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+    [[ -n "$DR1" && "$DR1" == "$DR2" ]] || DR_OK=0
+    [[ "$DR1" == *certificate\ leaf* ]] || DR_OK=0
+    [[ "$DR3" == *cdhash* && "$DR1" != "$DR3" ]] || DR_OK=0
+    if [[ -n "$DR_TMP" && -d "$DR_TMP" ]]; then
+        RESOLVED="$(cd "$DR_TMP" && pwd -P)"
+        if [[ "$RESOLVED" == "$DR_BASE"/dshbar-signing.* ]]; then
+            rm -rf -- "$RESOLVED"
+        fi
+    fi
+    if [[ "$DR_OK" -eq 1 ]]; then
+        pass "same-identity binaries share an identical certificate-leaf DR; ad-hoc DR is cdhash"
+    else
+        fail "two self-signed binaries must share one certificate-leaf DR, and ad-hoc must differ"
+    fi
+else
+    fail "DR stability not checkable: identity never minted in check 2"
+fi
+
 exit $FAILED

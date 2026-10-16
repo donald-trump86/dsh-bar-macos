@@ -123,7 +123,25 @@ SIGN_ARGS=()
 
 xattr -cr "$BUNDLE_DIR"
 
-if [[ -n "$SIGNING_IDENTITY" ]]; then
+# Auto-detect the long-lived self-signed identity when none was provided. TCC
+# matches permissions on the code signature's designated requirement; an
+# ad-hoc build gets a fresh cdhash every time, so every installed update
+# silently loses Accessibility, Automation and friends. Signing with the
+# same 'DSH Bar Self-Signing' identity keeps the requirement stable across
+# builds. See Packaging/create-signing-identity.sh to mint it once.
+if [[ -z "$SIGNING_IDENTITY" ]]; then
+    DETECTED_IDENTITY="$(security find-identity -p codesigning 2>/dev/null \
+        | sed -n 's/.*\"\(DSH Bar Self-Signing\)\".*/\1/p' | head -n 1 | tr -d '"')"
+    if [[ -n "$DETECTED_IDENTITY" ]]; then
+        SIGNING_IDENTITY="$DETECTED_IDENTITY"
+        echo "==> Using self-signed identity from keychain: ${SIGNING_IDENTITY}"
+    fi
+fi
+
+# Runtime option and timestamp are notarization machinery and depend on an
+# Apple timestamp server; they only make sense for Developer ID identities.
+# A self-signed identity must sign plainly or the build fails at signing time.
+if [[ "$SIGNING_IDENTITY" == "Developer ID Application:"* ]]; then
     SIGN_ARGS=(--options runtime --timestamp)
 fi
 
@@ -151,7 +169,7 @@ if [[ -d "$SPARKLE_FRAMEWORK" ]]; then
         "$SPARKLE_FRAMEWORK"
 fi
 
-if [[ -n "$SIGNING_IDENTITY" ]]; then
+if [[ -n "$SIGNING_IDENTITY" && "$SIGNING_IDENTITY" == "Developer ID Application:"* ]]; then
     echo "==> Signing with Developer ID: ${SIGNING_IDENTITY}"
     if [[ -f "Packaging/DSHBar.entitlements" ]]; then
         ENTITLEMENTS_ARG=(--entitlements "Packaging/DSHBar.entitlements")
@@ -160,8 +178,15 @@ if [[ -n "$SIGNING_IDENTITY" ]]; then
         ${ENTITLEMENTS_ARG[@]+"${ENTITLEMENTS_ARG[@]}"} \
         --sign "$SIGNING_IDENTITY" \
         "$BUNDLE_DIR"
+elif [[ -n "$SIGNING_IDENTITY" ]]; then
+    echo "==> Signing with self-signed identity: ${SIGNING_IDENTITY}"
+    codesign --force --entitlements "Packaging/DSHBar.entitlements" \
+        --sign "$SIGNING_IDENTITY" \
+        "$BUNDLE_DIR"
 else
     echo "==> Ad-hoc signing application (not notarized)..."
+    echo "    Tip: create a stable identity once with Packaging/create-signing-identity.sh"
+    echo "        to stop losing macOS permissions on every update."
     codesign --force --sign - "$BUNDLE_DIR"
 fi
 
