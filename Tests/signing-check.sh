@@ -21,12 +21,21 @@ IDENTITY="DSH Bar Self-Signing"
 SCRIPT="Packaging/create-signing-identity.sh"
 
 # Scratch keychain lifetime: created for check 2, reused by check 3, deleted
-# on exit. The login keychain is never touched by these checks.
+# on exit. The user's keychain search list is temporarily extended with the
+# scratch keychain — codesign's --keychain hint alone does not resolve
+# identities in non-search-list keychains on the macos-14 CI runner, though
+# newer local systems accept it — and restored by cleanup. The login keychain
+# itself is never modified by these checks.
 SCRATCH_DIR=""
 SCRATCH_KEYCHAIN=""
+OLD_SEARCH_LIST=()
 cleanup() {
     if [[ -n "$SCRATCH_KEYCHAIN" && -e "$SCRATCH_KEYCHAIN" ]]; then
         security delete-keychain "$SCRATCH_KEYCHAIN" >/dev/null 2>&1 || true
+    fi
+    if [[ ${#OLD_SEARCH_LIST[@]} -gt 0 ]]; then
+        security list-keychain -d user -s \
+            ${OLD_SEARCH_LIST[@]+"${OLD_SEARCH_LIST[@]}"} >/dev/null 2>&1 || true
     fi
     if [[ -n "$SCRATCH_DIR" && -d "$SCRATCH_DIR" ]]; then
         RESOLVED="$(cd "$SCRATCH_DIR" && pwd -P)"
@@ -63,6 +72,12 @@ MINT_OK=1
 security create-keychain -p testpw "$KEYCHAIN" >/dev/null 2>&1 || MINT_OK=0
 security set-keychain-settings -lut 300 "$KEYCHAIN" >/dev/null 2>&1 || MINT_OK=0
 security unlock-keychain -p testpw "$KEYCHAIN" >/dev/null 2>&1 || MINT_OK=0
+# Register the scratch keychain in the search list (and remember the old one
+# to restore in cleanup): on the macos-14 CI runner codesign resolves the
+# signing identity ONLY through the search list; the --keychain hint alone
+# leaves it "no identity found" there, while local macOS 27 accepts it.
+mapfile -t OLD_SEARCH_LIST < <(security list-keychain -d user 2>/dev/null | tr -d '"' | sed 's/^ *//;s/ *$//')
+security list-keychain -d user -s "$KEYCHAIN" ${OLD_SEARCH_LIST[@]+"${OLD_SEARCH_LIST[@]}"} >/dev/null 2>&1 || MINT_OK=0
 bash "$SCRIPT" --keychain "$KEYCHAIN" --keychain-password testpw \
     --p12-out "$TMP/test.p12" --password testpw --skip-trust >/dev/null 2>&1 || MINT_OK=0
 IDS="$(security find-identity -p codesigning "$KEYCHAIN" 2>/dev/null || true)"
@@ -153,10 +168,14 @@ if [[ "$MINT_OK" -eq 1 ]]; then
     clang -o "$DR_TMP/bin2" "$DR_TMP/m.c" >/dev/null 2>&1 || DR_OK=0
     clang -o "$DR_TMP/bin3" "$DR_TMP/m.c" >/dev/null 2>&1 || DR_OK=0
     codesign --force --keychain "$KEYCHAIN" -i dshbar-dr-check \
-        --sign "$IDENTITY" "$DR_TMP/bin1" >/dev/null 2>&1 || DR_OK=0
+        --sign "$IDENTITY" "$DR_TMP/bin1" >/dev/null 2>&1 \
+        || { DR_OK=0; DR_ERR1="$(codesign --force --keychain "$KEYCHAIN" -i dshbar-dr-check --sign "$IDENTITY" "$DR_TMP/bin1" 2>&1 | tail -2)"; }
     codesign --force --keychain "$KEYCHAIN" -i dshbar-dr-check \
-        --sign "$IDENTITY" "$DR_TMP/bin2" >/dev/null 2>&1 || DR_OK=0
+        --sign "$IDENTITY" "$DR_TMP/bin2" >/dev/null 2>&1 \
+        || { DR_OK=0; DR_ERR2="$(codesign --force --keychain "$KEYCHAIN" -i dshbar-dr-check --sign "$IDENTITY" "$DR_TMP/bin2" 2>&1 | tail -2)"; }
     codesign --force --sign - "$DR_TMP/bin3" >/dev/null 2>&1 || DR_OK=0
+    [[ -n "${DR_ERR1:-}" ]] && echo "      codesign bin1 said: $DR_ERR1"
+    [[ -n "${DR_ERR2:-}" ]] && echo "      codesign bin2 said: $DR_ERR2"
     DR1="$(dr_text "$DR_TMP/bin1")"
     DR2="$(dr_text "$DR_TMP/bin2")"
     DR3="$(dr_text "$DR_TMP/bin3")"
