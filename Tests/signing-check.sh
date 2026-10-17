@@ -121,14 +121,31 @@ fi
 #    self-signed identity must yield an IDENTICAL designated requirement
 #    (what TCC matches on — this is why permissions survive updates), while
 #    an ad-hoc binary's DR is cdhash-based and unique per build. Empirical
-#    notes recorded in the SDD report: DR text comes from `codesign -d -r-`
-#    (-drr prints nothing on this OS), it embeds the binary's identifier so
+#    notes recorded in the SDD report: DR text comes from `codesign -d -r-`,
+#    but WHICH stream carries it varies by macOS version (stderr on the
+#    macos-14 CI runner, stdout on newer local systems), so dr_text merges
+#    both streams, strips the per-binary Executable= line, and falls back
+#    to -drr; the DR embeds the binary's identifier so
 #    both copies are signed with a fixed -i to keep the comparison honest,
 #    and a self-signed cert anchors as `certificate leaf = H"…"` rather than
 #    the Apple-CA `anchor` form — the leaf hash is the TCC-stability property.
 #    Signing goes through `codesign --keychain` because the scratch keychain
 #    is deliberately not in the user's keychain search list.
 DR_OK=1
+# codesign -d writes the Executable= line and, depending on the macOS
+# version, the designated requirement itself to EITHER stdout or stderr
+# (macos-14 runners emit the DR on stderr, newer local systems on stdout).
+# Merge both streams, drop the per-binary Executable= line, and normalize
+# whitespace so two binaries signed by one identity compare equal. If -r-
+# yields nothing (older formats), try -drr as a fallback.
+dr_text() {
+    local out=""
+    out="$(codesign -d -r- "$1" 2>&1 | grep -v '^Executable=' | tr -s '[:space:]' ' ')"
+    if [[ -z "${out// /}" ]]; then
+        out="$(codesign -d -drr "$1" 2>&1 | grep -v '^Executable=' | tr -s '[:space:]' ' ')"
+    fi
+    printf '%s' "$out"
+}
 if [[ "$MINT_OK" -eq 1 ]]; then
     DR_TMP="$(mktemp -d "${TMPDIR:-/tmp}/dshbar-signing.XXXXXX")"
     printf 'int main(){return 0;}\n' > "$DR_TMP/m.c"
@@ -140,9 +157,9 @@ if [[ "$MINT_OK" -eq 1 ]]; then
     codesign --force --keychain "$KEYCHAIN" -i dshbar-dr-check \
         --sign "$IDENTITY" "$DR_TMP/bin2" >/dev/null 2>&1 || DR_OK=0
     codesign --force --sign - "$DR_TMP/bin3" >/dev/null 2>&1 || DR_OK=0
-    DR1="$(codesign -d -r- "$DR_TMP/bin1" 2>/dev/null | tr -s '[:space:]' ' ')"
-    DR2="$(codesign -d -r- "$DR_TMP/bin2" 2>/dev/null | tr -s '[:space:]' ' ')"
-    DR3="$(codesign -d -r- "$DR_TMP/bin3" 2>/dev/null | tr -s '[:space:]' ' ')"
+    DR1="$(dr_text "$DR_TMP/bin1")"
+    DR2="$(dr_text "$DR_TMP/bin2")"
+    DR3="$(dr_text "$DR_TMP/bin3")"
     DR_BASE="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
     [[ -n "$DR1" && "$DR1" == "$DR2" ]] || DR_OK=0
     [[ "$DR1" == *certificate\ leaf* ]] || DR_OK=0
