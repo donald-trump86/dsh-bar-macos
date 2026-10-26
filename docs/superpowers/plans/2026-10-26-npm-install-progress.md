@@ -45,5 +45,16 @@
 
 - [x] Set both version fields to 1.0.3; add actual feature and signing changes to Markdown/HTML release notes, including the first-upgrade permission caveat.
 - [x] Run existing checks (avoid local certificate-generation tests where the private-file policy applies; run them in CI) and universal signed build; verify certificate-leaf designated requirement matches the prior local build.
-- [ ] Review the final diff, commit, push main and a new v1.0.3 tag without force.
-- [ ] Wait for CI, inspect release notes/assets, download the published ZIP and SHA256, verify universal architectures, nested signatures, same certificate identity and the appcast metadata/signature.
+- [x] Review the final diff, commit, push main and a new v1.0.3 tag without force.
+- [x] Wait for CI, inspect release notes/assets, download the published ZIP and SHA256, verify universal architectures, nested signatures, same certificate identity and the appcast metadata/signature.
+
+## Verification Results
+
+- Release commit: `2551111612529cef912b7602701af2f065744d3a`; tag `v1.0.3`.
+- [CI](https://github.com/donald-trump86/dsh-bar-macos/actions/runs/40301696788): universal build and full consistency checks passed.
+- [Release workflow](https://github.com/donald-trump86/dsh-bar-macos/actions/runs/40302008439): certificate import, signed build, packaging, appcast signing and publishing passed. Apple notarization was skipped for the self-signed identity.
+- [Published release](https://github.com/donald-trump86/dsh-bar-macos/releases/tag/v1.0.3): stable, public, latest; ZIP, SHA256 and appcast present.
+- Downloaded ZIP: 3,695,633 bytes; SHA256 `317821402b5d98992815a228509875811e4b1a6603ba22d536cfcdccbbd7710c` matches the published checksum.
+- Downloaded app: version/build 1.0.3; `arm64` and `x86_64`; strict recursive codesign verification passed. Certificate leaf SHA1 `34959d783d07b4e31befa94f5f5c33f8825ba32e` matches the original local identity.
+- Appcast: version, download URL, length and feature notes match. Its Ed25519 signature verifies against the app's embedded public key. The update feed and public key are unchanged from v1.0.2.
+- This validates the published artifacts and update metadata; an actual user upgrade and macOS permission retention were not exercised.
