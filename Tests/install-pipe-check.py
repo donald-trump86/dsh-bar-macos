@@ -55,9 +55,10 @@ def main():
                                           r"static func installCommand\(",
                                           r"func install\("])
     fields = "\n".join(extract(source, pattern) for pattern in [
-        r"^    private var installInFlight = false$",
-        r"^    private\(set\) var isInstalling = false$",
+        r"^    private\(set\) var installActivity: InstallActivity\?$",
+        r"^    var isInstalling: Bool \{ installActivity != nil \}$",
     ])
+    activity = extract(source, r"^struct InstallActivity: Equatable \{.*?^}$")
     errors = extract(source, r"^enum DshVersionControllerError: LocalizedError \{.*?^}$")
     environment = r'''
 enum LocalizationKey: String {
@@ -104,11 +105,25 @@ func install(_ mode: String, runFailure: Bool = false) -> Result<String, Error> 
     controller.install(tag: "latest") {
         expect(Thread.isMainThread, "callback left the main thread")
         expect(!controller.isInstalling, "busy state was not reset before completion")
+        expect(controller.installActivity == nil, "activity survived completion")
         result = $0
         calls += 1
         totalCompletions += 1
     }
     expect(controller.isInstalling, "install never set busy state")
+    let activity = controller.installActivity
+    expect(activity?.tag == "latest", "activity lost the selected tag")
+    expect(activity!.startedAt <= ProcessInfo.processInfo.systemUptime, "invalid monotonic start")
+    if mode == "silent" {
+        let deadline = Date().addingTimeInterval(1.1)
+        while Date() < deadline {
+            _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        expect(result == nil && controller.isInstalling, "silent child completed early")
+        expect(controller.installActivity == activity, "activity reset while child was silent")
+        expect(activity!.elapsed(at: ProcessInfo.processInfo.systemUptime) >= "0:01",
+               "elapsed time froze without output")
+    }
     controller.install(tag: "next") {
         expect(Thread.isMainThread, "exclusion callback left main thread")
         guard case .failure(let error) = $0,
@@ -125,6 +140,7 @@ func install(_ mode: String, runFailure: Bool = false) -> Result<String, Error> 
     }
     expect(calls == 1, "install completed more than once")
     expect(!controller.isInstalling, "busy state remained set")
+    expect(controller.installActivity == nil, "finished activity remained set")
     return result!
 }
 func expectSuccess(_ result: Result<String, Error>) {
@@ -160,7 +176,20 @@ if case .failure(let error) = install("success", runFailure: true),
 }
 // Reuse after every outcome also verifies the private exclusion flag reset.
 expectSuccess(install("success"))
-expect(totalCompletions == 5, "wrong completion count")
+expectSuccess(install("silent"))
+for tag in ["bad;tag", "latest"] {
+    if tag == "latest" { ServiceManager.shared.executable = nil }
+    var done = false
+    controller.install(tag: tag) {
+        guard case .failure = $0 else { expect(false, "preflight succeeded"); return }
+        expect(Thread.isMainThread, "preflight completion left main thread")
+        done = true
+    }
+    expect(!controller.isInstalling && controller.installActivity == nil,
+           "preflight failure started an activity")
+    pump { done }
+}
+expect(totalCompletions == 6, "wrong completion count")
 print("PASS install pipe: noisy success/failure, bounded tail, exclusion, reset, run failure")
 '''
     # Capture the absolute temp root before creating anything; cleanup verifies it.
@@ -169,15 +198,19 @@ print("PASS install pipe: noisy success/failure, bounded tail, exclusion, reset,
     try:
         assert work.parent == temp_root and work.name.startswith("dsh-install-pipe-")
         swift = work / "main.swift"
-        swift.write_text("import Foundation\n" + environment + errors
+        swift.write_text("import Foundation\n" + environment + errors + "\n" + activity
                          + "\nfinal class DshVersionController {\n"
                          + fields + "\n" + methods + "\n}\n" + checks)
         dummy = work / "dummy-npm"
         dummy.write_text(f"#!{sys.executable}\n" + '''import os
 import sys
+import time
 assert sys.argv[1:] == ["install", "-g", "@deepseek-ai/dsh@latest"]
 assert os.environ["INSTALL_PIPE_SENTINEL"] == "preserved"
 mode = os.environ["MODE"]
+if mode == "silent":
+    time.sleep(1.5)
+    sys.exit(0)
 if mode == "empty":
     sys.exit(24)
 os.write(1, b"BEGIN-OUTPUT\\n")

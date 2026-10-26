@@ -77,6 +77,7 @@ final class Localization {
         case tagProbeOffline, tagProbeTimedOut, tagProbeNotFound, tagProbeBadResponse
         case installConfirmTitle, installConfirmBody
         case installFailedTitle, installDoneRestartNotice
+        case installingEllipsis, installProgressStatus
         case installTagInvalid, installAlreadyRunning, installNoOutput
         case installFailedBody, installNpmNotFound, installCouldNotStart
 
@@ -307,6 +308,8 @@ final class Localization {
         .tagProbeBadResponse: "The npm registry returned an unexpected response",
         .installConfirmTitle: "Install this channel?",
         .installConfirmBody: "This runs the following command:\n\n{command}\n\nThe service keeps running until you restart it.",
+        .installingEllipsis: "Installing…",
+        .installProgressStatus: "Installing {tag} · Elapsed {elapsed}",
         .installFailedTitle: "Install failed",
         .installDoneRestartNotice: "Installed. Restart the service to use it.",
         .installTagInvalid: "This channel name is not a valid npm tag.",
@@ -540,6 +543,8 @@ final class Localization {
         .tagProbeBadResponse: "npm registry 返回了无法解析的内容",
         .installConfirmTitle: "要安装这个通道吗？",
         .installConfirmBody: "将执行以下命令：\n\n{command}\n\n服务会继续运行，直到你重启它。",
+        .installingEllipsis: "正在安装…",
+        .installProgressStatus: "正在安装 {tag} · 已用时 {elapsed}",
         .installFailedTitle: "安装失败",
         .installDoneRestartNotice: "已安装，重启服务后生效。",
         .installTagInvalid: "这个通道名不是合法的 npm tag。",

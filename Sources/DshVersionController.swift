@@ -1,5 +1,16 @@
 import Foundation
 
+/// Timing is independent of npm output and wall-clock adjustments.
+struct InstallActivity: Equatable {
+    let tag: String
+    let startedAt: TimeInterval
+
+    func elapsed(at now: TimeInterval) -> String {
+        let seconds = max(0, Int(now - startedAt))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+}
+
 /// One entry in the install-channel popup: an npm dist-tag, the version it
 /// currently resolves to, and whether that version is the one already on disk.
 struct TagOption: Equatable {
@@ -153,11 +164,8 @@ final class DshVersionController {
         return URLSession(configuration: config)
     }()
 
-    private var installInFlight = false
-
-    /// Whether an npm process is running right now. The row reads this to grey
-    /// out its own button; `install` refuses a second run regardless.
-    private(set) var isInstalling = false
+    private(set) var installActivity: InstallActivity?
+    var isInstalling: Bool { installActivity != nil }
 
     func fetchTags(completion: @escaping (Result<[String: String], ProbeFailure>) -> Void) {
         var request = URLRequest(url: Self.distTagsURL)
@@ -196,7 +204,7 @@ final class DshVersionController {
         }
         // A second install is dropped, not queued: two `npm install -g` runs
         // against the same global prefix corrupt each other.
-        guard !installInFlight else {
+        guard !isInstalling else {
             return DispatchQueue.main.async {
                 completion(.failure(DshVersionControllerError.alreadyInstalling))
             }
@@ -207,8 +215,7 @@ final class DshVersionController {
             }
         }
 
-        installInFlight = true
-        isInstalling = true
+        installActivity = InstallActivity(tag: tag, startedAt: ProcessInfo.processInfo.systemUptime)
         let arguments = command
             .split(separator: " ", omittingEmptySubsequences: true)
             .dropFirst()
@@ -256,8 +263,7 @@ final class DshVersionController {
                 failure = .installCouldNotStart(error.localizedDescription)
             }
             DispatchQueue.main.async {
-                self.installInFlight = false
-                self.isInstalling = false
+                self.installActivity = nil
                 switch failure {
                 case .some(let error):
                     completion(.failure(error))

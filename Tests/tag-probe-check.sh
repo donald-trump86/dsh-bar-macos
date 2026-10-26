@@ -57,6 +57,7 @@ mv "$CACHE/command.wrapped.swift" "$CACHE/command.swift"
 # The value types the row renders from, verbatim from the real sources. These
 # are what decides the truth table, so they are never re-declared here.
 {
+    sed -n '/^struct InstallActivity/,/^}$/p'      "$SOURCE"
     sed -n '/^struct TagOption/,/^}$/p'            "$SOURCE"
     sed -n '/^enum ProbeFailure/,/^}$/p'           "$SOURCE"
     sed -n '/^enum ProbeState/,/^}$/p'             "$SOURCE"
@@ -88,7 +89,7 @@ final class SettingsManager {
 enum Localization {
     enum Key: String {
         case installChannel, installChannelDesc, tagInstalledSuffix
-        case searchingPath, checkingEllipsis, installEllipsis
+        case searchingPath, checkingEllipsis, installEllipsis, installingEllipsis
         case installDoneRestartNotice, portChangedAppliesLater
         case tagProbeOffline, tagProbeTimedOut, tagProbeNotFound, tagProbeBadResponse
     }
@@ -276,12 +277,28 @@ expect(whileRunning.installButtonEnabled == onNext.installButtonEnabled,
 
 // An npm process already running is the one thing that must grey the button out:
 // two `npm install -g` runs against the same global prefix corrupt each other.
-DshVersionController.shared.isInstalling = true
+let activity = InstallActivity(tag: "next", startedAt: 100)
+expect(activity.elapsed(at: 100) == "0:00", "initial elapsed time is wrong")
+expect(activity.elapsed(at: 99) == "0:00", "elapsed time went negative")
+expect(activity.elapsed(at: 165.9) == "1:05", "elapsed time did not advance")
+expect(activity.elapsed(at: 3700) == "60:00", "long installs wrapped the elapsed time")
 let busy = tagRowPresentation(
-    state: twins, installedTag: "latest", isRunning: false, pendingRestart: false
+    state: twins, installedTag: "latest", isRunning: false, pendingRestart: false,
+    installActivity: activity
 )
 expect(busy.installButtonEnabled == false, "install enabled while npm is already running")
-DshVersionController.shared.isInstalling = false
+expect(!busy.popupEnabled, "channel can be changed during installation")
+expect(busy.installButtonTitle == "installingEllipsis", "busy install button lost its status")
+for state in [ProbeState.loading, .failed(.offline), twins] {
+    let installing = tagRowPresentation(
+        state: state, installedTag: "latest", isRunning: true, pendingRestart: true,
+        installActivity: activity
+    )
+    expect(!installing.popupEnabled && !installing.installButtonEnabled,
+           "probe completion re-enabled an installing row")
+    expect(!installing.showsRestartNotice, "old restart notice obscured the current install")
+    expect(installing.description == "installingEllipsis", "probe obscured installation")
+}
 
 // After a successful install, the notice tells the user what to do next.
 let pending = tagRowPresentation(

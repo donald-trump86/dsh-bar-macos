@@ -192,6 +192,10 @@ jobs:
           mkdir -p dist
           NOTES="dist/release-notes.md"
           {
+            if [[ -f "Packaging/ReleaseNotes/$VERSION.md" ]]; then
+              cat "Packaging/ReleaseNotes/$VERSION.md"
+              printf '\n'
+            fi
             printf '### Installation\n\n'
             printf '1. Download and unzip `%s`.\n' "$ZIP_NAME"
             printf '2. Delete any older **DSH Bar.app** first. It shares this app\x27s bundle identifier, and leaving both installed makes macOS open the wrong one.\n'
@@ -219,6 +223,9 @@ jobs:
           # generate_appcast embeds it verbatim in the feed's CDATA.
           NOTES_HTML="dist/${ZIP_NAME%.zip}.html"
           {
+            if [[ -f "Packaging/ReleaseNotes/$VERSION.html" ]]; then
+              cat "Packaging/ReleaseNotes/$VERSION.html"
+            fi
             printf '<h3>Installation</h3>\n'
             printf '<ol>\n'
             printf '<li>Download and unzip <code>%s</code>.</li>\n' "$ZIP_NAME"

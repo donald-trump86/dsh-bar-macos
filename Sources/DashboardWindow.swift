@@ -41,16 +41,15 @@ func tagRowPresentation(
     state: ProbeState,
     installedTag: String?,
     isRunning: Bool,
-    pendingRestart: Bool
+    pendingRestart: Bool,
+    installActivity: InstallActivity? = nil
 ) -> TagRowPresentation {
     let options = state.options()
     let title = L(.installChannel)
 
-    // Only the probe is doing work here, so only the probe changes its button;
-    // with nothing to install, "Install…" stays the label the user expects.
-    // The two arms this replaces gave `.failed` and the default case the same
-    // string, so the switch was three branches of one decision.
-    let button: String = state.isLoading ? L(.checkingEllipsis) : L(.installEllipsis)
+    let installing = installActivity != nil
+    let button = installing ? L(.installingEllipsis)
+        : (state.isLoading ? L(.checkingEllipsis) : L(.installEllipsis))
 
     var titles = [String]()
     titles.reserveCapacity(options.count)
@@ -87,12 +86,12 @@ func tagRowPresentation(
         // covers an install performed while the service was stopped, and
         // .portChangedRestartToApply ("Restart to Apply") would be a lie
         // there. The full sentence lives in the confirmation dialog.
-        description: state.failure?.message ?? restingDescription,
+        description: installing ? L(.installingEllipsis) : (state.failure?.message ?? restingDescription),
         popupTitle: popupTitle,
-        popupEnabled: !options.isEmpty,
+        popupEnabled: !installing && !options.isEmpty,
         installButtonTitle: button,
-        installButtonEnabled: hasOtherChannel && !DshVersionController.shared.isInstalling,
-        showsRestartNotice: pendingRestart
+        installButtonEnabled: hasOtherChannel && !installing,
+        showsRestartNotice: pendingRestart && !installing
     )
 }
 
@@ -139,6 +138,11 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     private let tagPopup = NSPopUpButton()
     private let tagInstallButton = NSButton()
     private let tagInfoLabel = NSTextField(labelWithString: "")
+    private let tagInstallProgress = NSProgressIndicator()
+    private let tagInstallStatusLabel = NSTextField(labelWithString: "")
+    private var tagInstallTimer: Timer?
+    private var tagRowHeightConstraint: NSLayoutConstraint?
+    private var preferencesCardHeightConstraint: NSLayoutConstraint?
     /// Last probe result; the row re-renders from it whenever anything changes.
     private var tagProbeState: ProbeState = .idle
     /// The channel currently on disk, resolved from the last successful probe.
@@ -213,6 +217,12 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         )
         NotificationCenter.default.addObserver(
             self,
+            selector: #selector(stopInstallProgress),
+            name: NSWindow.willCloseNotification,
+            object: window
+        )
+        NotificationCenter.default.addObserver(
+            self,
             selector: #selector(panelDidResignKey),
             name: NSWindow.didResignKeyNotification,
             object: window
@@ -243,6 +253,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        tagInstallTimer?.invalidate()
         if let token = notifierObserverToken {
             ServiceNotifier.shared.removeObserver(token)
         }
@@ -276,6 +287,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         window?.level = .floating
         super.showWindow(sender)
         window?.makeKeyAndOrderFront(sender)
+        refreshTagRow()
     }
     
     private func setupUI() {
@@ -317,6 +329,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         let cardIsNaturalHeight = preferencesCard.heightAnchor
             .constraint(equalToConstant: 541)
         cardIsNaturalHeight.priority = .defaultHigh
+        preferencesCardHeightConstraint = cardIsNaturalHeight
 
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: visualEffect.topAnchor, constant: 34),
@@ -724,6 +737,18 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         tagInstallButton.controlSize = .small
         tagRow.addSubview(tagInstallButton)
 
+        tagInstallProgress.style = .bar
+        tagInstallProgress.isIndeterminate = true
+        tagInstallProgress.usesThreadedAnimation = true
+        tagInstallProgress.translatesAutoresizingMaskIntoConstraints = false
+        tagRow.addSubview(tagInstallProgress)
+        tagInstallStatusLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        tagInstallStatusLabel.textColor = .secondaryLabelColor
+        tagInstallStatusLabel.lineBreakMode = .byTruncatingMiddle
+        tagInstallStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+        tagRow.addSubview(tagInstallStatusLabel)
+        tagRowHeightConstraint = tagRow.heightAnchor.constraint(equalToConstant: 54)
+
         let separator8 = makeSeparator()
         card.addSubview(separator8)
 
@@ -888,7 +913,14 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             tagRow.topAnchor.constraint(equalTo: separator7.bottomAnchor),
             tagRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
             tagRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            tagRow.heightAnchor.constraint(equalToConstant: 54),
+            tagRowHeightConstraint!,
+            tagInstallProgress.leadingAnchor.constraint(equalTo: tagRow.leadingAnchor),
+            tagInstallProgress.trailingAnchor.constraint(equalTo: tagRow.trailingAnchor),
+            tagInstallProgress.topAnchor.constraint(equalTo: tagRow.topAnchor, constant: 51),
+            tagInstallProgress.heightAnchor.constraint(equalToConstant: 4),
+            tagInstallStatusLabel.leadingAnchor.constraint(equalTo: tagRow.leadingAnchor),
+            tagInstallStatusLabel.trailingAnchor.constraint(equalTo: tagRow.trailingAnchor),
+            tagInstallStatusLabel.topAnchor.constraint(equalTo: tagRow.topAnchor, constant: 61),
 
             separator8.topAnchor.constraint(equalTo: tagRow.bottomAnchor),
             separator8.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
@@ -911,10 +943,10 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             updateCheckButton.heightAnchor.constraint(equalToConstant: 26),
 
             tagText.leadingAnchor.constraint(equalTo: tagRow.leadingAnchor),
-            tagText.centerYAnchor.constraint(equalTo: tagRow.centerYAnchor),
+            tagText.centerYAnchor.constraint(equalTo: tagRow.topAnchor, constant: 27),
             tagText.trailingAnchor.constraint(lessThanOrEqualTo: tagPopup.leadingAnchor, constant: -12),
             tagPopup.trailingAnchor.constraint(equalTo: tagInstallButton.leadingAnchor, constant: -8),
-            tagPopup.centerYAnchor.constraint(equalTo: tagRow.centerYAnchor),
+            tagPopup.centerYAnchor.constraint(equalTo: tagRow.topAnchor, constant: 27),
             // 210pt fits the widest localized installed marker ("latest
             // (0.2.0-rc.2, installed)", measured at 204pt). A narrower popup
             // truncates every one of them.
@@ -922,7 +954,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             tagPopup.heightAnchor.constraint(equalToConstant: 20),
 
             tagInstallButton.trailingAnchor.constraint(equalTo: tagRow.trailingAnchor),
-            tagInstallButton.centerYAnchor.constraint(equalTo: tagRow.centerYAnchor),
+            tagInstallButton.centerYAnchor.constraint(equalTo: tagRow.topAnchor, constant: 27),
             tagInstallButton.widthAnchor.constraint(equalToConstant: 84),
             tagInstallButton.heightAnchor.constraint(equalToConstant: 26),
 
@@ -1164,7 +1196,8 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             state: tagProbeState,
             installedTag: installedTagName,
             isRunning: ServiceManager.shared.isRunning,
-            pendingRestart: pendingTagRestart
+            pendingRestart: pendingTagRestart,
+            installActivity: DshVersionController.shared.installActivity
         )
 
         let options = tagProbeState.options()
@@ -1188,6 +1221,42 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         tagInfoLabel.textColor = presentation.showsRestartNotice
             ? .systemOrange
             : .secondaryLabelColor
+        refreshInstallProgress()
+    }
+
+    private func refreshInstallProgress() {
+        let activity = DshVersionController.shared.installActivity
+        let visible = activity != nil && window?.isVisible == true
+        tagInstallProgress.isHidden = activity == nil
+        tagInstallStatusLabel.isHidden = activity == nil
+        tagRowHeightConstraint?.constant = activity == nil ? 54 : 92
+        preferencesCardHeightConstraint?.constant = activity == nil ? 541 : 579
+        if let activity {
+            tagInstallStatusLabel.stringValue = L(.installProgressStatus, [
+                "tag": activity.tag,
+                "elapsed": activity.elapsed(at: ProcessInfo.processInfo.systemUptime)
+            ])
+            tagInstallStatusLabel.toolTip = tagInstallStatusLabel.stringValue
+            tagInstallProgress.setAccessibilityLabel(tagInstallStatusLabel.stringValue)
+        }
+        if visible {
+            tagInstallProgress.startAnimation(nil)
+            if tagInstallTimer == nil {
+                let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+                    self?.refreshInstallProgress()
+                }
+                tagInstallTimer = timer
+                RunLoop.main.add(timer, forMode: .common)
+            }
+        } else {
+            stopInstallProgress()
+        }
+    }
+
+    @objc private func stopInstallProgress() {
+        tagInstallProgress.stopAnimation(nil)
+        tagInstallTimer?.invalidate()
+        tagInstallTimer = nil
     }
 
     /// Clear the "restart to use it" notice, but only on evidence.
@@ -1375,6 +1444,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         let wasRunning = ServiceManager.shared.isRunning
         DshVersionController.shared.install(tag: tag) { [weak self] result in
             guard let self else { return }
+            self.refreshTagRow()
             switch result {
             case .success:
                 // Re-probe rather than assume: npm can exit 0 having changed
@@ -1391,6 +1461,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
                 self.refreshTagRow()
             }
         }
+        refreshTagRow()
     }
     
     @objc private func didClickCopy() {
@@ -1739,6 +1810,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     }
     
     @objc private func didClickClose() {
+        stopInstallProgress()
         if isRecordingHotKey {
             stopRecording(cancelled: true)
         }

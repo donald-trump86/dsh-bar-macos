@@ -78,7 +78,7 @@ xattr -cr "/Applications/DeepSeek Harness Bar.app"
   - **全局热键**：录制自定义热键，录完立即生效。
   - **开机自启动**（Launch at login）。
   - 查看 DSH CLI 路径和版本，未安装时提供安装引导。
-  - **安装通道**：从 `latest` / `next` / `alpha` 等 npm dist-tag 中选择要安装的 dsh 版本，已安装的通道会标注 `(installed)`。确认后执行 `npm install -g @deepseek-ai/dsh@<tag>`。服务运行中也可安装，会提示“重启后生效”，但不会自动重启。安装失败时显示 npm 原始报错，不回滚。选择的通道只会被记住，不会自动安装。
+  - **安装通道**：从 `latest` / `next` / `alpha` 等 npm dist-tag 中选择要安装的 dsh 版本，已安装的通道会标注 `(installed)`。确认后执行 `npm install -g @deepseek-ai/dsh@<tag>`，显示动画进度条、安装通道和已用时间；安装期间锁定通道选择与安装按钮，关闭再打开面板仍可查看进度。服务运行中也可安装，会提示“重启后生效”，但不会自动重启。安装失败时显示 npm 原始报错，不回滚。选择的通道只会被记住，不会自动安装。
   - 复制本地 Web 地址、打开实时日志。
   - 启动或重启 DSH Bar、启动或重启服务时，都不会自动打开 Web 界面。
 

@@ -132,6 +132,12 @@ else
     fail "install pipe check failed — run python3 $SCRIPT_DIR/install-pipe-check.py to see why"
 fi
 
+if python3 "$SCRIPT_DIR/install-progress-check.py"; then
+    pass "install progress timer, localization and panel lifecycle"
+else
+    fail "install progress check failed — run python3 $SCRIPT_DIR/install-progress-check.py to see why"
+fi
+
 # 11. The vendored Sparkle framework must stay complete and universal, and the
 #     update pipeline must keep its signing and wiring invariants.
 if bash "$SCRIPT_DIR/sparkle-check.sh"; then
