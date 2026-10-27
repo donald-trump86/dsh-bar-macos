@@ -55,4 +55,15 @@ Files: `README.md`; check runner if a new focused test is added.
 
 - [x] Run focused fixtures, localization/probe checks, relevant existing regression suite and universal build.
 - [x] Independent review of cancellation/integrity and UI lifecycle; fix substantive findings.
-- [x] Inspect native render, document limitations and deliver local build. Do not publish yet.
+- [x] Inspect native render, document limitations and deliver local build. Publication was subsequently authorized by the user on 2026-10-27.
+
+## Release verification
+
+- Release commit: `d6c85477dac056484aa134a153d220f314e0502f`; annotated tag `v1.0.4`.
+- [CI](https://github.com/donald-trump86/dsh-bar-macos/actions/runs/40481885439): universal build and full consistency checks passed.
+- [Release workflow](https://github.com/donald-trump86/dsh-bar-macos/actions/runs/40482208704): signing, packaging, EdDSA appcast generation and publication passed. Apple notarization was skipped for the self-signed identity.
+- [Published release](https://github.com/donald-trump86/dsh-bar-macos/releases/tag/v1.0.4): public, stable and latest; ZIP, SHA256 and appcast uploaded.
+- Downloaded ZIP: 3,754,042 bytes; SHA256 `02406534f48e7ab202b2f5b6453f207d461c71587edb8f5128fc62d616a98ac0` matches the checksum and GitHub asset digest.
+- Downloaded app: version/build `1.0.4`, macOS `13.0+`, `arm64` and `x86_64`; strict recursive codesign verification passed. Certificate leaf SHA1 `34959d783d07b4e31befa94f5f5c33f8825ba32e` matches the previous release.
+- Appcast version, length, download URL and embedded notes agree with the published archive. Ed25519 verification passed against the app's embedded public key. The live latest feed is byte-identical to the v1.0.4 feed; the feed URL and public key are unchanged.
+- Verification did not launch a real npm installation or perform an actual user upgrade; macOS permission retention was not exercised.
