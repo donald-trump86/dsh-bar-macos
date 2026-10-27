@@ -46,6 +46,7 @@ SOURCE_FILES=(
     Sources/LogTextBuffer.swift
     Sources/DshInstallAssistant.swift
     Sources/DshVersionController.swift
+    Sources/InstallProcess.swift
     Sources/ExternalServicePrompt.swift
     Sources/ServiceNotifier.swift
     Sources/Localization.swift

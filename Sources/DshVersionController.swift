@@ -1,9 +1,17 @@
 import Foundation
+import CryptoKit
 
 /// Timing is independent of npm output and wall-clock adjustments.
 struct InstallActivity: Equatable {
+    enum Phase: Equatable { case resolving, downloading, verifying, installing, cancelling }
     let tag: String
     let startedAt: TimeInterval
+    var phase: Phase = .resolving
+    var bytesReceived: Int64 = 0
+    var totalBytes: Int64? = nil
+    var bytesPerSecond: Double = 0
+    var outputTail: String = ""
+    var version: String? = nil
 
     func elapsed(at now: TimeInterval) -> String {
         let seconds = max(0, Int(now - startedAt))
@@ -100,6 +108,7 @@ enum DshVersionControllerError: LocalizedError {
     case npmNotFound
     case installFailed(exitCode: Int32, output: String)
     case installCouldNotStart(String)
+    case cancelled
 
     var errorDescription: String? {
         switch self {
@@ -116,6 +125,8 @@ enum DshVersionControllerError: LocalizedError {
             return L(.installNpmNotFound)
         case .installCouldNotStart(let message):
             return L(.installCouldNotStart, ["reason": message])
+        case .cancelled:
+            return L(.installCancelled)
         }
     }
 }
@@ -165,7 +176,26 @@ final class DshVersionController {
     }()
 
     private(set) var installActivity: InstallActivity?
+    private(set) var lastInstallLog: String = ""
+    private(set) var isTerminating = false
+    private var terminationWaiters: [() -> Void] = []
     var isInstalling: Bool { installActivity != nil }
+    private var installer: ArchiveInstaller?
+    private var activityTimer: Timer?
+    private let fixtureOrigin: URL?
+    private let temporaryRoot: URL
+    private let stageObserver: ((InstallActivity.Phase) -> Void)?
+
+    init(fixtureOrigin: URL? = nil, temporaryRoot: URL = FileManager.default.temporaryDirectory,
+         stageObserver: ((InstallActivity.Phase) -> Void)? = nil) {
+        // Test injection accepts loopback only; production never reads endpoint overrides.
+        precondition(fixtureOrigin == nil || (fixtureOrigin?.scheme == "http"
+            && fixtureOrigin?.host == "127.0.0.1" && fixtureOrigin?.user == nil
+            && fixtureOrigin?.password == nil))
+        self.fixtureOrigin = fixtureOrigin
+        self.temporaryRoot = temporaryRoot
+        self.stageObserver = stageObserver
+    }
 
     func fetchTags(completion: @escaping (Result<[String: String], ProbeFailure>) -> Void) {
         var request = URLRequest(url: Self.distTagsURL)
@@ -193,84 +223,325 @@ final class DshVersionController {
         }.resume()
     }
 
-    /// Runs npm for one tag. Never a shell: argv is `executableURL` plus
-    /// `arguments`, so a tag cannot become shell syntax even if the allowlist
-    /// above is ever loosened.
+    /// Principal archive requests use the public registry; npm keeps its dependency environment.
     func install(tag: String, completion: @escaping (Result<String, Error>) -> Void) {
-        guard let command = Self.installCommand(forTag: tag) else {
-            return DispatchQueue.main.async {
-                completion(.failure(DshVersionControllerError.invalidTag(tag)))
-            }
+        if !Thread.isMainThread {
+            return DispatchQueue.main.async { self.install(tag: tag, completion: completion) }
         }
-        // A second install is dropped, not queued: two `npm install -g` runs
-        // against the same global prefix corrupt each other.
+        guard !isTerminating else {
+            return DispatchQueue.main.async { completion(.failure(DshVersionControllerError.cancelled)) }
+        }
+        guard Self.validTag(tag) else {
+            return DispatchQueue.main.async { completion(.failure(DshVersionControllerError.invalidTag(tag))) }
+        }
         guard !isInstalling else {
-            return DispatchQueue.main.async {
-                completion(.failure(DshVersionControllerError.alreadyInstalling))
-            }
+            return DispatchQueue.main.async { completion(.failure(DshVersionControllerError.alreadyInstalling)) }
         }
         guard let npm = ServiceManager.shared.findNpmBinary() else {
-            return DispatchQueue.main.async {
-                completion(.failure(DshVersionControllerError.npmNotFound))
-            }
+            return DispatchQueue.main.async { completion(.failure(DshVersionControllerError.npmNotFound)) }
         }
-
-        installActivity = InstallActivity(tag: tag, startedAt: ProcessInfo.processInfo.systemUptime)
-        let arguments = command
-            .split(separator: " ", omittingEmptySubsequences: true)
-            .dropFirst()
-            .map(String.init)
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: npm)
-        process.arguments = arguments
-        process.environment = ServiceManager.commandEnvironment()
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
+        let worker = ArchiveInstaller(tag: tag, fixtureOrigin: fixtureOrigin,
+                                      temporaryRoot: temporaryRoot, stageObserver: stageObserver)
+        installer = worker
+        lastInstallLog = ""
+        installActivity = worker.snapshot()
+        activityTimer = Timer(timeInterval: 0.1, repeats: true) { [weak self, weak worker] _ in
+            guard let self, let worker, self.installer === worker else { return }
+            self.installActivity = worker.snapshot()
+        }
+        RunLoop.main.add(activityTimer!, forMode: .common)
+        let environment = ServiceManager.commandEnvironment()
         DispatchQueue.global(qos: .utility).async {
-            defer {
-                pipe.fileHandleForReading.closeFile()
-                pipe.fileHandleForWriting.closeFile()
-            }
-            var failure: DshVersionControllerError?
-            do {
-                try process.run()
-                // Only npm owns the write end now, so its exit produces EOF.
-                pipe.fileHandleForWriting.closeFile()
-                // Drain while npm runs: waiting first can fill the pipe and
-                // block npm forever. Keep only the final 64 KiB of diagnostics.
-                let outputLimit = 64 * 1024
-                var output = Data()
-                while true {
-                    let chunk = pipe.fileHandleForReading.readData(ofLength: 8192)
-                    if chunk.isEmpty { break }
-                    output.append(chunk)
-                    if output.count > outputLimit {
-                        output.removeFirst(output.count - outputLimit)
-                    }
-                }
-                process.waitUntilExit()
-                if process.terminationStatus != 0 {
-                    failure = .installFailed(
-                        exitCode: process.terminationStatus,
-                        output: String(decoding: output, as: UTF8.self)
-                            .trimmingCharacters(in: .whitespacesAndNewlines)
-                    )
-                }
-            } catch {
-                failure = .installCouldNotStart(error.localizedDescription)
-            }
+            let result = worker.run(npm: npm, environment: environment)
             DispatchQueue.main.async {
+                guard self.installer === worker else { return }
+                self.activityTimer?.invalidate()
+                self.activityTimer = nil
+                self.lastInstallLog = worker.snapshot().outputTail
+                self.installer = nil
                 self.installActivity = nil
-                switch failure {
-                case .some(let error):
-                    completion(.failure(error))
-                case .none:
-                    completion(.success(""))
-                }
+                completion(worker.isCancelled ? .failure(DshVersionControllerError.cancelled) : result)
+                let waiters = self.terminationWaiters
+                self.terminationWaiters.removeAll()
+                waiters.forEach { $0() }
             }
         }
+    }
+
+    func cancelInstallForTermination(completion: @escaping () -> Void) {
+        if !Thread.isMainThread {
+            return DispatchQueue.main.async { self.cancelInstallForTermination(completion: completion) }
+        }
+        isTerminating = true
+        guard installer != nil else { return DispatchQueue.main.async(execute: completion) }
+        terminationWaiters.append(completion)
+        cancelInstall()
+    }
+
+    func cancelInstall() {
+        if !Thread.isMainThread { return DispatchQueue.main.async { self.cancelInstall() } }
+        guard let installer else { return }
+        installer.cancel()
+        installActivity = installer.snapshot()
+    }
+}
+
+/// One run owns its session, private archive, cancellation gate and bounded diagnostics.
+private final class ArchiveInstaller: NSObject, URLSessionDataDelegate {
+    private let lock = NSLock()
+    private let cancellation = InstallCancellation()
+    private var activity: InstallActivity
+    private var tail = Data()
+    private var sampleTime = ProcessInfo.processInfo.systemUptime
+    private var sampleBytes: Int64 = 0
+    private let fixtureOrigin: URL?
+    private let temporaryRoot: URL
+    private let stageObserver: ((InstallActivity.Phase) -> Void)?
+    var isCancelled: Bool { cancellation.isCancelled }
+    private var currentTask: URLSessionDataTask?
+    private let finishedRequest = DispatchSemaphore(value: 0)
+    // Delegate accesses these serially, then hands them to the waiting worker.
+    private var responseData = Data()
+    private var requestError: Error?
+    private var archive: FileHandle?
+    private var downloading = false
+    private lazy var downloadSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieStorage = nil
+        config.urlCredentialStorage = nil
+        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForResource = 900
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        return URLSession(configuration: config, delegate: self, delegateQueue: queue)
+    }()
+
+    init(tag: String, fixtureOrigin: URL?, temporaryRoot: URL,
+         stageObserver: ((InstallActivity.Phase) -> Void)?) {
+        activity = InstallActivity(tag: tag, startedAt: ProcessInfo.processInfo.systemUptime)
+        self.fixtureOrigin = fixtureOrigin
+        self.temporaryRoot = temporaryRoot
+        self.stageObserver = stageObserver
+    }
+
+    func cancel() {
+        guard !cancellation.isCancelled else { return }
+        cancellation.cancel()
+        append(Data(("\n" + L(.installCancelled) + "\n").utf8))
+        lock.lock()
+        activity.phase = .cancelling
+        activity.bytesPerSecond = 0
+        let task = currentTask
+        lock.unlock()
+        task?.cancel()
+    }
+
+    func snapshot() -> InstallActivity {
+        lock.lock(); defer { lock.unlock() }
+        let now = ProcessInfo.processInfo.systemUptime
+        if activity.phase == .downloading, now > sampleTime {
+            activity.bytesPerSecond = Double(activity.bytesReceived - sampleBytes) / (now - sampleTime)
+        } else {
+            activity.bytesPerSecond = 0
+        }
+        sampleBytes = activity.bytesReceived
+        sampleTime = now
+        activity.outputTail = Self.logText(tail)
+        return activity
+    }
+
+    private func phase(_ value: InstallActivity.Phase) throws {
+        try cancellation.whileActive {
+            lock.lock(); activity.phase = value; activity.bytesPerSecond = 0; lock.unlock()
+        }
+        stageObserver?(value)
+        try cancellation.check()
+    }
+
+    private func append(_ data: Data) {
+        lock.lock(); defer { lock.unlock() }
+        tail.append(data)
+        if tail.count > 65_536 { tail.removeFirst(tail.count - 65_536) }
+    }
+
+    private static func logText(_ data: Data) -> String {
+        var text = String(decoding: data, as: UTF8.self)
+        // Best-effort display redaction; npm output is kept locally, without export here.
+        for (pattern, replacement) in [
+            (#"(https?://)[^\s/@]+(?::[^\s/@]*)?@"#, "$1[redacted]@"),
+            (#"(?i)(authorization\s*[:=]\s*(?:bearer|basic)\s+)[^\s]+"#, "$1[redacted]"),
+            (#"(?i)((?:_authToken|_auth|token|password)\s*[=:]\s*)[^\s&]+"#, "$1[redacted]")
+        ] {
+            text = text.replacingOccurrences(of: pattern, with: replacement, options: .regularExpression)
+        }
+        while text.utf8.count > 65_536 { text.removeFirst() }
+        return text
+    }
+
+    func run(npm: String, environment: [String: String]) -> Result<String, Error> {
+        let directory = temporaryRoot.appendingPathComponent("dsh-install-" + UUID().uuidString, isDirectory: true)
+        var result: Result<String, Error>
+        var createdDirectory = false
+        do {
+            try cancellation.check()
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+                                                     attributes: [.posixPermissions: 0o700])
+            createdDirectory = true
+            let archiveURL = directory.appendingPathComponent("package.tgz")
+            append(Data("Resolving @deepseek-ai/dsh@\(activity.tag) from the public npm registry\n".utf8))
+            let base = fixtureOrigin?.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                ?? "https://registry.npmjs.org"
+            let metadataURL = URL(string: base + "/@deepseek-ai%2fdsh/" + activity.tag)!
+            let metadata = try request(metadataURL)
+            guard let document = try JSONSerialization.jsonObject(with: metadata) as? [String: Any],
+                  document["name"] as? String == "@deepseek-ai/dsh",
+                  let version = document["version"] as? String,
+                  version.range(of: #"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"#,
+                                options: .regularExpression) != nil,
+                  let dist = document["dist"] as? [String: Any],
+                  let tarball = dist["tarball"] as? String, let url = URL(string: tarball), trusted(url),
+                  url.path == "/@deepseek-ai/dsh/-/dsh-\(version).tgz",
+                  let integrity = dist["integrity"] as? String,
+                  let digest = integrity.split(separator: " ").compactMap({ token -> Data? in
+                      guard token.hasPrefix("sha512-"),
+                            let data = Data(base64Encoded: String(token.dropFirst(7))), data.count == 64 else { return nil }
+                      return data
+                  }).first else {
+                throw failure("Invalid official package metadata, archive URL or SHA-512 integrity")
+            }
+            lock.lock(); activity.version = version; lock.unlock()
+            try phase(.downloading)
+            guard FileManager.default.createFile(atPath: archiveURL.path, contents: nil,
+                                                  attributes: [.posixPermissions: 0o600]) else {
+                throw failure("Could not create private package archive")
+            }
+            archive = try FileHandle(forWritingTo: archiveURL)
+            _ = try request(url, download: true)
+            try archive?.close()
+            archive = nil
+            try phase(.verifying)
+            append(Data("Verifying SHA-512 for \(version)\n".utf8))
+            let input = try FileHandle(forReadingFrom: archiveURL)
+            do {
+                defer { try? input.close() }
+                var hash = SHA512()
+                while true {
+                    try cancellation.check()
+                    let chunk = try input.read(upToCount: 128 * 1024) ?? Data()
+                    if chunk.isEmpty { break }
+                    hash.update(data: chunk)
+                }
+                guard Data(hash.finalize()) == digest else { throw failure("Package SHA-512 integrity mismatch") }
+            }
+            try phase(.installing)
+            append(Data("Installing verified local archive with npm\n".utf8))
+            let code = try InstallProcess.run(executable: npm,
+                arguments: ["install", "-g", archiveURL.path, "--loglevel", "http"],
+                environment: environment, cancellation: cancellation, output: append)
+            try cancellation.check()
+            if code != 0 {
+                throw DshVersionControllerError.installFailed(exitCode: code,
+                    output: snapshot().outputTail.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            append(Data("\nInstallation completed\n".utf8))
+            result = .success("")
+        } catch {
+            let error: Error = cancellation.isCancelled ? DshVersionControllerError.cancelled
+                : (error as? DshVersionControllerError ?? failure(error.localizedDescription))
+            append(Data(("\n" + error.localizedDescription + "\n").utf8))
+            result = .failure(error)
+        }
+        downloadSession.invalidateAndCancel()
+        try? archive?.close()
+        archive = nil
+        do {
+            if createdDirectory {
+                try FileManager.default.removeItem(at: directory)
+            }
+        } catch {
+            append(Data(("Archive cleanup failed: " + error.localizedDescription + "\n").utf8))
+            if case .success = result { result = .failure(failure("Could not remove temporary package archive")) }
+        }
+        if cancellation.isCancelled { return .failure(DshVersionControllerError.cancelled) }
+        return result
+    }
+
+    private func failure(_ detail: String) -> DshVersionControllerError { .installCouldNotStart(detail) }
+
+    private func trusted(_ url: URL) -> Bool {
+        guard url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else { return false }
+        if let origin = fixtureOrigin {
+            return url.scheme == "http" && url.host == "127.0.0.1" && url.port == origin.port
+        }
+        return url.scheme == "https" && url.host == "registry.npmjs.org" && (url.port == nil || url.port == 443)
+    }
+
+    private func request(_ url: URL, download: Bool = false) throws -> Data {
+        try cancellation.check()
+        responseData = Data()
+        requestError = nil
+        downloading = download
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let task = downloadSession.dataTask(with: request)
+        lock.lock(); currentTask = task; lock.unlock()
+        if cancellation.isCancelled { task.cancel() }
+        task.resume()
+        finishedRequest.wait()
+        lock.lock(); currentTask = nil; lock.unlock()
+        try cancellation.check()
+        if let requestError { throw requestError }
+        return responseData
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        guard let url = request.url, trusted(url) else {
+            requestError = failure("Refused a redirect outside the official package registry")
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let url = response.url, trusted(url) else {
+            if requestError == nil {
+                requestError = failure("Package request failed (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0))")
+            }
+            completionHandler(.cancel)
+            return
+        }
+        if downloading {
+            lock.lock()
+            activity.totalBytes = response.expectedContentLength > 0 ? response.expectedContentLength : nil
+            lock.unlock()
+        }
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        do {
+            if downloading {
+                try archive?.write(contentsOf: data)
+                lock.lock(); activity.bytesReceived += Int64(data.count); lock.unlock()
+            } else {
+                guard responseData.count + data.count <= 1024 * 1024 else {
+                    throw failure("Package metadata exceeds the 1 MiB limit")
+                }
+                responseData.append(data)
+            }
+        } catch {
+            requestError = error
+            dataTask.cancel()
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if requestError == nil { requestError = error }
+        finishedRequest.signal()
     }
 }

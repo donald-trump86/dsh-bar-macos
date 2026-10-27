@@ -87,17 +87,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         terminationReplyPending = true
         let stoppingService = pendingQuitStopsService
         pendingQuitStopsService = false
-        ServiceManager.shared.performWhenLifecycleIdle {
-            let reply = {
-                HotKeyManager.shared.stopRecoveryMonitoring()
-                ServiceManager.shared.prepareForTermination()
-                self.terminationReplyPending = false
-                NSApplication.shared.reply(toApplicationShouldTerminate: true)
-            }
-            if stoppingService {
-                ServiceManager.shared.stopServiceForQuit { _, _ in reply() }
-            } else {
-                reply()
+        DshVersionController.shared.cancelInstallForTermination {
+            ServiceManager.shared.performWhenLifecycleIdle {
+                let reply = {
+                    HotKeyManager.shared.stopRecoveryMonitoring()
+                    ServiceManager.shared.prepareForTermination()
+                    self.terminationReplyPending = false
+                    NSApplication.shared.reply(toApplicationShouldTerminate: true)
+                }
+                if stoppingService {
+                    ServiceManager.shared.stopServiceForQuit { _, _ in reply() }
+                } else {
+                    reply()
+                }
             }
         }
         return .terminateLater

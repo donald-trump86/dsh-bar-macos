@@ -46,6 +46,11 @@ final class Localization {
 
         // Sections
         case sectionLocalConsole, sectionPreferences
+        case settingsService, settingsVersions, settingsGeneral, barUpdates
+        case installResolving, installDownloading, installVerifying, installDependencies
+        case installCancelling, installCancelled, installFinished, installStopped
+        case installElapsed, installRemaining, installSizeUnknown, installWaiting
+        case installShowDetails, installHideDetails, installLogEmpty, installCancelHint
 
         // Service status
         case statusChecking, statusStarting, statusRunning, statusStopping
@@ -298,6 +303,27 @@ final class Localization {
         .installedAt: "Installed: {path}{version}",
         .notFoundInstallNpm: "Not found — install with npm to start the service",
 
+        .settingsService: "Service",
+        .settingsVersions: "Versions & Updates",
+        .settingsGeneral: "General",
+        .barUpdates: "DSH Bar Updates",
+        .installResolving: "Looking up {tag}…",
+        .installDownloading: "Downloading DSH package",
+        .installVerifying: "Verifying package…",
+        .installDependencies: "Installing package & dependencies…",
+        .installCancelling: "Cancelling…",
+        .installCancelled: "Installation cancelled",
+        .installFinished: "Installation complete",
+        .installStopped: "Installation failed",
+        .installElapsed: "Elapsed {elapsed}",
+        .installRemaining: "About {time} remaining",
+        .installSizeUnknown: "{size} downloaded",
+        .installWaiting: "Waiting for data…",
+        .installShowDetails: "Show installation log",
+        .installHideDetails: "Hide installation log",
+        .installLogEmpty: "The installation log will appear here.",
+        .installCancelHint: "Cancelling stops this task. It may leave an incomplete installation; you can install again.",
+
         // Install channel
         .installChannel: "Install Channel",
         .installChannelDesc: "Choose which dsh release channel to install. The change applies after the service restarts.",
@@ -307,7 +333,7 @@ final class Localization {
         .tagProbeNotFound: "This package is not on the npm registry",
         .tagProbeBadResponse: "The npm registry returned an unexpected response",
         .installConfirmTitle: "Install this channel?",
-        .installConfirmBody: "This runs the following command:\n\n{command}\n\nThe service keeps running until you restart it.",
+        .installConfirmBody: "Downloads and verifies the DSH package from the public npm registry, then installs the archive with npm. Dependencies use your npm configuration.\n\nRequested channel: {command}\n\nThe running service keeps its current version until you restart it.",
         .installingEllipsis: "Installing…",
         .installProgressStatus: "Installing {tag} · Elapsed {elapsed}",
         .installFailedTitle: "Install failed",
@@ -317,7 +343,7 @@ final class Localization {
         .installNoOutput: "npm produced no output, so the result is unknown.",
         .installFailedBody: "npm exited with status {code}:\n{output}",
         .installNpmNotFound: "npm was not found on your PATH.",
-        .installCouldNotStart: "npm could not be started: {reason}",
+        .installCouldNotStart: "Installation could not proceed: {reason}",
 
         // Updates
         .checkForUpdatesEllipsis: "Check for Updates…",
@@ -533,6 +559,27 @@ final class Localization {
         .installedAt: "已安装：{path}{version}",
         .notFoundInstallNpm: "未找到 — 需用 npm 安装后才能启动服务",
 
+        .settingsService: "服务",
+        .settingsVersions: "版本与更新",
+        .settingsGeneral: "通用",
+        .barUpdates: "DSH Bar 应用更新",
+        .installResolving: "正在查询 {tag}…",
+        .installDownloading: "正在下载 DSH 安装包",
+        .installVerifying: "正在校验安装包…",
+        .installDependencies: "正在安装程序与依赖…",
+        .installCancelling: "正在取消…",
+        .installCancelled: "安装已取消",
+        .installFinished: "安装完成",
+        .installStopped: "安装失败",
+        .installElapsed: "已用时 {elapsed}",
+        .installRemaining: "预计还需 {time}",
+        .installSizeUnknown: "已下载 {size}",
+        .installWaiting: "正在等待数据…",
+        .installShowDetails: "显示安装日志",
+        .installHideDetails: "收起安装日志",
+        .installLogEmpty: "安装日志会显示在这里。",
+        .installCancelHint: "取消会停止本次任务，可能留下未完成的安装；之后可以重新安装。",
+
         // Install channel
         .installChannel: "安装通道",
         .installChannelDesc: "选择要安装的 dsh 发布通道。修改将在服务重启后生效。",
@@ -542,7 +589,7 @@ final class Localization {
         .tagProbeNotFound: "npm registry 上没有这个包",
         .tagProbeBadResponse: "npm registry 返回了无法解析的内容",
         .installConfirmTitle: "要安装这个通道吗？",
-        .installConfirmBody: "将执行以下命令：\n\n{command}\n\n服务会继续运行，直到你重启它。",
+        .installConfirmBody: "将从 npm 公共仓库下载并校验 DSH 安装包，再用 npm 安装。依赖安装沿用你的 npm 配置。\n\n所选通道：{command}\n\n正在运行的服务会保持当前版本，直到你重启它。",
         .installingEllipsis: "正在安装…",
         .installProgressStatus: "正在安装 {tag} · 已用时 {elapsed}",
         .installFailedTitle: "安装失败",
@@ -552,7 +599,7 @@ final class Localization {
         .installNoOutput: "npm 没有输出，结果未知。",
         .installFailedBody: "npm 以状态码 {code} 退出：\n{output}",
         .installNpmNotFound: "在 PATH 中没有找到 npm。",
-        .installCouldNotStart: "无法启动 npm：{reason}",
+        .installCouldNotStart: "安装无法继续：{reason}",
 
         // Updates
         .checkForUpdatesEllipsis: "检查更新…",

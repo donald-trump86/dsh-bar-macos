@@ -75,20 +75,13 @@ check_pair Sources/ServiceManager.swift wakeObserver "wakeObserver = NSWorkspace
 check_pair Sources/DashboardWindow.swift localEventMonitor "addLocalMonitorForEvents" "removeMonitor(monitor)"
 check_pair Sources/DashboardWindow.swift globalEventMonitor "addGlobalMonitorForEvents" "removeMonitor(monitor)"
 
-# 6. The window's floor and the preferences card's height are separate numbers.
-#    The floor is chrome + the scroll view's 180pt minimum; the card keeps its
-#    own constant because it lives in the scroll view and grows by scrolling,
-#    not by resizing. What this check actually protects is the wiring -- that
-#    minSize is derived from the named constant rather than a duplicated
-#    literal, and that the card really is the scroll view's document view.
-#    NOTE: it does NOT verify that the floor covers the card. It did not before
-#    the install-channel row either; the card scrolls when it does not.
-if grep -q "minSize = NSSize(width: 540, height: Self.naturalContentHeight)" Sources/DashboardWindow.swift \
-   && grep -q "private static let naturalContentHeight: CGFloat = 592" Sources/DashboardWindow.swift \
-   && grep -q "preferencesScroll.documentView = preferencesCard" Sources/DashboardWindow.swift; then
-    pass "panel minimum size is derived from its fixed-height rows"
+# 6. Exercise the actual settings view with inert service/update dependencies.
+#    Group heights are intrinsic; check rendered geometry at the minimum width,
+#    both languages and appearances, including an expanded installation task.
+if python3 "$SCRIPT_DIR/settings-layout-check.py"; then
+    pass "grouped settings render without clipped controls at compact widths"
 else
-    fail "panel minSize is not tied to naturalContentHeight (rows will clip)"
+    fail "dashboard layout check failed — run python3 $SCRIPT_DIR/settings-layout-check.py to see why"
 fi
 
 # 7. The version controller runs npm and probes the registry from its own file,
@@ -130,6 +123,12 @@ if python3 "$SCRIPT_DIR/install-pipe-check.py"; then
     pass "npm output is drained with bounded diagnostics and install state cleanup"
 else
     fail "install pipe check failed — run python3 $SCRIPT_DIR/install-pipe-check.py to see why"
+fi
+
+if python3 "$SCRIPT_DIR/install-download-check.py"; then
+    pass "archive download telemetry, integrity, cancellation and cleanup"
+else
+    fail "install download check failed — run python3 $SCRIPT_DIR/install-download-check.py to see why"
 fi
 
 if python3 "$SCRIPT_DIR/install-progress-check.py"; then

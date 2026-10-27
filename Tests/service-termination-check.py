@@ -69,6 +69,23 @@ STOP
     }
     func queueDrained() -> Bool { lifecycleIdleActions.isEmpty && !lifecycleIdleDrainScheduled }
 }
+final class DshVersionController {
+    static let shared = DshVersionController()
+    var isInstalling = false
+    var cancelCalls = 0
+    var waiters: [() -> Void] = []
+    func cancelInstallForTermination(completion: @escaping () -> Void) {
+        cancelCalls += 1
+        if isInstalling { waiters.append(completion) }
+        else { DispatchQueue.main.async(execute: completion) }
+    }
+    func finishCleanup() {
+        isInstalling = false
+        let pending = waiters
+        waiters = []
+        pending.forEach { $0() }
+    }
+}
 final class HotKeyManager {
     static let shared = HotKeyManager()
     var monitorStops = 0
@@ -81,6 +98,7 @@ final class NSApplication {
     func reply(toApplicationShouldTerminate: Bool) {
         expect(toApplicationShouldTerminate)
         expect(!ServiceManager.shared.snapshot.phase.isBusy, "termination replied during lifecycle")
+        expect(!DshVersionController.shared.isInstalling, "termination replied before installation cleanup")
         expect(HotKeyManager.shared.monitorStops == 1, "termination must release shortcut recovery once")
         replies += 1
     }
@@ -231,6 +249,23 @@ service.setPhase(.error)
 drain()
 expect(NSApplication.shared.replies == 1 && service.stopCalls == 0)
 print("PASS actual quit delegate: delayed reply, repeated requests, owned stop and external safety")
+// Quit must join installer cleanup before handling the service or replying.
+service = reset(.running)
+let installerQuit = DelegateProbe()
+let installer = DshVersionController.shared
+installer.isInstalling = true
+let cancelCalls = installer.cancelCalls
+expect(installerQuit.applicationShouldTerminate(.shared) == .terminateLater)
+expect(installerQuit.applicationShouldTerminate(.shared) == .terminateLater)
+drain()
+expect(installer.cancelCalls == cancelCalls + 1, "repeated quit requested duplicate cleanup")
+expect(NSApplication.shared.replies == 0 && service.monitorStops == 0,
+       "quit finalized before installation cleanup")
+installer.finishCleanup()
+drain()
+expect(NSApplication.shared.replies == 1 && service.stopCalls == 0,
+       "quit did not complete after cleanup or stopped healthy service")
+print("PASS actual quit gate joins installation cleanup before service handling")
 // Real Sparkle hook body: delay only while lifecycle is active.
 service = reset(.running)
 let updateProbe = UpdateProbe()

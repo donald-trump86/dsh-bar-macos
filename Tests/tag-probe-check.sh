@@ -300,6 +300,18 @@ for state in [ProbeState.loading, .failed(.offline), twins] {
     expect(installing.description == "installingEllipsis", "probe obscured installation")
 }
 
+// Cancellation can leave a partially written installation reporting the same version.
+let retryState = ProbeState.loaded(tags: ["latest": "1.0.0"], installedVersion: "1.0.0")
+let retry = tagRowPresentation(state: retryState, installedTag: "latest", isRunning: false,
+                               pendingRestart: false, allowsRetry: true)
+expect(retry.installButtonEnabled, "cancelled single-channel installation cannot retry")
+let busyRetry = tagRowPresentation(state: retryState, installedTag: "latest", isRunning: false,
+    pendingRestart: false, installActivity: activity, allowsRetry: true)
+expect(!busyRetry.installButtonEnabled, "retry bypasses active-install exclusion")
+let emptyRetry = tagRowPresentation(state: .failed(.offline), installedTag: nil, isRunning: false,
+                                    pendingRestart: false, allowsRetry: true)
+expect(!emptyRetry.installButtonEnabled, "retry enabled without a usable channel")
+
 // After a successful install, the notice tells the user what to do next.
 let pending = tagRowPresentation(
     state: twins, installedTag: "next", isRunning: true, pendingRestart: true

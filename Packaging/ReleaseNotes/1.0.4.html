@@ -1,0 +1,11 @@
+<h3>What's changed</h3>
+<ul>
+<li>Settings now use native Service, Versions &amp; Updates, and General groups, with wrapping descriptions and layouts checked in English and Chinese, light and dark appearances, and compact windows.</li>
+<li>DSH package downloads show real downloaded bytes and transfer speed. When the total size is known, they also show a percentage and estimated time remaining. Dependency installation shows its current stage, elapsed time, and expandable logs.</li>
+<li>Installation can be cancelled. Controls become available again after cleanup, and quitting DSH Bar waits for the installation task to finish cancelling.</li>
+<li>Installation feedback survives closing and reopening the dashboard or switching languages. The last 64 KiB of installation logs remain available after completion.</li>
+<li>The downloaded main package is pinned to the resolved version and checked against the registry's SHA-512 integrity value before npm runs.</li>
+</ul>
+<h3>Installation behavior</h3>
+<p>The main DSH package downloads directly from the official public <code>registry.npmjs.org</code>, bypassing npm's main-package cache and custom registry, authentication, proxy, and CA settings. Dependencies still use npm's own configuration and environment. Use the terminal if your setup requires a private mirror or custom network configuration.</p>
+<p>Cancelling or failing an installation does not roll back changes npm has already made. Installing a new CLI version does not automatically restart a running DSH service.</p>

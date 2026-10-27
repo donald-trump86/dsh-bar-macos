@@ -1,109 +1,143 @@
 #!/usr/bin/env python3
-"""Run the actual AppKit progress renderer without a real window, npm or DSH."""
+"""Exercise actual progress presentation/AppKit methods with inert dependencies."""
 import importlib.util
-import os
 from pathlib import Path
-import subprocess
-import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("install_pipe", ROOT / "Tests/install-pipe-check.py")
-pipe = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(pipe)
+spec = importlib.util.spec_from_file_location("dashboard_fixture", ROOT / "Tests/dashboard-ui-fixture.py")
+fixture = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fixture)
 source = (ROOT / "Sources/DashboardWindow.swift").read_text()
-activity = pipe.extract((ROOT / "Sources/DshVersionController.swift").read_text(),
-                        r"^struct InstallActivity: Equatable \{.*?^}$")
-methods = "\n".join(pipe.extract(source, rf"^    {signature}.*?^    }}$") for signature in [
+presentation = fixture.extract(source, r"^struct InstallProgressPresentation: Equatable \{.*?^}$")
+presentation += "\n" + fixture.extract(source, r"^func installProgressPresentation\(.*?^}$")
+methods = "\n".join(fixture.extract(source, rf"^    {signature}.*?^    }}$") for signature in [
     r"private func refreshInstallProgress\(", r"@objc private func stopInstallProgress\(",
-])
-# Access changes apply only to the harness, leaving production behavior intact.
-methods = methods.replace("private func", "func")
+    r"@objc private func didClickCancelInstall\(", r"@objc private func didClickInstallDetails\(",
+]).replace("private func", "func")
+# Control spies observe animation decisions; only the system preference read is
+# injected so both accessibility branches run without changing host defaults.
+methods = methods.replace("NSWorkspace.shared.accessibilityDisplayShouldReduceMotion", "reduceMotion")
 harness = r'''
 import Cocoa
-final class DshVersionController {
-    static let shared = DshVersionController()
-    var installActivity: InstallActivity?
-}
-enum Key { case installProgressStatus }
-var chinese = false
-func L(_ key: Key, _ values: [String: String]) -> String {
-    "\(chinese ? "正在安装" : "Installing") \(values["tag"]!) · \(values["elapsed"]!)"
+final class ProgressSpy: NSProgressIndicator {
+    var starts = 0
+    var stops = 0
+    override func startAnimation(_ sender: Any?) { starts += 1 }
+    override func stopAnimation(_ sender: Any?) { stops += 1 }
 }
 struct PanelVisibility { var isVisible = true }
 final class ProgressHarness: NSObject {
     var window: PanelVisibility? = PanelVisibility()
-    let tagInstallProgress = NSProgressIndicator()
+    let tagInstallProgress = ProgressSpy()
     let tagInstallStatusLabel = NSTextField(labelWithString: "")
+    let tagInstallMetricsLabel = NSTextField(labelWithString: "")
     var tagInstallTimer: Timer?
-    let row = NSView()
-    let card = NSView()
-    var tagRowHeightConstraint: NSLayoutConstraint?
-    var preferencesCardHeightConstraint: NSLayoutConstraint?
-    override init() {
-        super.init()
-        tagRowHeightConstraint = row.heightAnchor.constraint(equalToConstant: 54)
-        preferencesCardHeightConstraint = card.heightAnchor.constraint(equalToConstant: 541)
-        tagInstallProgress.isIndeterminate = true
-    }
+    let installTaskStack = NSStackView()
+    let tagCancelButton = NSButton()
+    let tagDetailsButton = NSButton()
+    let tagLogScroll = NSScrollView()
+    let tagLogText = NSTextView()
+    var showsInstallDetails = false
+    var installOutcome: Localization.Key?
+    var reduceMotion = false
 '''
 checks = r'''
-func expect(_ condition: Bool, _ message: String) {
-    if !condition {
-        FileHandle.standardError.write(Data(("FAIL: " + message + "\n").utf8))
-        exit(1)
-    }
-}
-func pump(_ seconds: TimeInterval) {
-    let until = Date().addingTimeInterval(seconds)
-    while Date() < until {
-        _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
-    }
-}
+_ = NSApplication.shared
+Localization.shared.apply(language: .english)
+let model = DshVersionController.shared
 let panel = ProgressHarness()
 panel.refreshInstallProgress()
-expect(panel.tagInstallProgress.isHidden && panel.tagInstallTimer == nil, "idle progress is active")
-let start = ProcessInfo.processInfo.systemUptime
-let activity = InstallActivity(tag: "next", startedAt: start)
-DshVersionController.shared.installActivity = activity
+expect(panel.installTaskStack.isHidden && panel.tagInstallTimer == nil, "idle task visible or ticking")
+let now: TimeInterval = 100
+var snapshot = InstallActivity(tag: "next", startedAt: 35, phase: .downloading,
+    bytesReceived: 1_000_000, totalBytes: 4_000_000, bytesPerSecond: 500_000,
+    outputTail: "first\nlast", version: "2.0.0")
+let known = installProgressPresentation(activity: snapshot, now: now)
+expect(known.fraction == 0.25 && known.canCancel, "known fraction/cancel is wrong")
+for text in ["1 MB / 4 MB", "25%", "500 KB/s", "Elapsed 1:05", "About 0:06 remaining"] {
+    expect(known.metrics.contains(text), "missing real download metric: \(text); got \(known.metrics)")
+}
+expect(known.title == "Downloading DSH package · 2.0.0", "download phase/version title")
+snapshot.totalBytes = nil
+let unknown = installProgressPresentation(activity: snapshot, now: now)
+expect(unknown.fraction == nil && unknown.metrics.contains("1 MB downloaded"), "unknown total fabricated progress")
+expect(!unknown.metrics.contains("%") && !unknown.metrics.contains("remaining"), "unknown total shows percent/ETA")
+for badRate in [0, -1, Double.nan, Double.infinity] {
+    snapshot.bytesPerSecond = badRate
+    let waiting = installProgressPresentation(activity: snapshot, now: now)
+    expect(waiting.metrics.contains("Waiting for data") && !waiting.metrics.contains("/s"), "invalid rate rendered")
+}
+snapshot.totalBytes = 0
+snapshot.bytesReceived = -1
+expect(installProgressPresentation(activity: snapshot, now: now).fraction == nil, "zero total fabricated fraction")
+snapshot.totalBytes = 10
+snapshot.bytesReceived = 20
+snapshot.bytesPerSecond = 1
+expect(installProgressPresentation(activity: snapshot, now: now).fraction == 1, "fraction exceeds one")
+for phase: InstallActivity.Phase in [.resolving, .verifying, .installing, .cancelling] {
+    snapshot.phase = phase
+    let result = installProgressPresentation(activity: snapshot, now: now)
+    expect(result.fraction == nil && result.metrics == "Elapsed 1:05", "non-download phase shows download telemetry")
+    expect(result.canCancel == (phase != .cancelling), "cancelling remains cancellable")
+}
+snapshot.phase = .resolving
+var live = InstallActivity(tag: "next", startedAt: ProcessInfo.processInfo.systemUptime,
+    phase: .resolving, outputTail: "first\nlast")
+model.installActivity = live
 panel.refreshInstallProgress()
 let timer = panel.tagInstallTimer
-expect(timer != nil && timer!.isValid, "install did not schedule a timer")
-expect(!panel.tagInstallProgress.isHidden, "install bar stayed hidden")
-expect(panel.tagInstallStatusLabel.stringValue.contains("next"), "wrong installing tag")
-expect(panel.tagRowHeightConstraint?.constant == 92, "row did not expand")
-expect(panel.preferencesCardHeightConstraint?.constant == 579, "scroll card did not expand")
-pump(1.15)
-expect(panel.tagInstallStatusLabel.stringValue.hasSuffix("0:01"), "timer did not advance without output")
-expect(panel.tagInstallTimer === timer, "refresh duplicated the timer")
-chinese = true
+expect(timer != nil && timer!.isValid, "visible install did not schedule timer")
+expect(!panel.installTaskStack.isHidden && !panel.tagInstallProgress.isHidden, "active task hidden")
+expect(panel.tagInstallStatusLabel.stringValue.contains("next"), "resolving lost channel")
+expect(panel.tagInstallProgress.starts > 0, "indeterminate progress did not animate")
+panel.reduceMotion = true
+let starts = panel.tagInstallProgress.starts
 panel.refreshInstallProgress()
-expect(panel.tagInstallStatusLabel.stringValue.hasPrefix("正在安装 next"), "language rebuild lost status")
-expect(DshVersionController.shared.installActivity == activity, "language change reset install time")
+expect(panel.tagInstallProgress.starts == starts && panel.tagInstallProgress.stops > 0, "reduce motion still animated")
+// Tracking is a common run-loop mode: this catches default-mode-only timers.
+pump(1.15, mode: .eventTracking)
+expect(panel.tagInstallMetricsLabel.stringValue.contains("0:01"), "common-mode timer froze during tracking")
+expect(panel.tagInstallTimer === timer, "refresh duplicated timer")
+panel.showsInstallDetails = true
+panel.refreshInstallProgress()
+expect(!panel.tagLogScroll.isHidden && panel.tagLogText.string == "first\nlast", "live log unavailable")
+panel.tagLogText.setSelectedRange(NSRange(location: 1, length: 3))
+panel.refreshInstallProgress()
+expect(panel.tagLogText.selectedRange() == NSRange(location: 1, length: 3), "unchanged log reset selection")
+// The UI consumes the controller's already bounded tail, including Unicode.
+live.outputTail = String(repeating: "x", count: 65_520) + "\n中文 tail"
+model.installActivity = live
+panel.refreshInstallProgress()
+expect(panel.tagLogText.string == live.outputTail && panel.tagLogText.string.utf8.count <= 65_536, "bounded log was expanded or lost")
+panel.didClickCancelInstall()
+expect(model.cancelCalls == 1 && !panel.tagCancelButton.isEnabled, "cancel did not invoke controller/disable button")
+expect(panel.tagCancelButton.title == "Cancelling…", "cancel state title")
+let preserved = model.installActivity
+Localization.shared.apply(language: .chinese)
+panel.refreshInstallProgress()
+expect(panel.tagInstallStatusLabel.stringValue == "正在取消…", "real Chinese phase translation missing")
+expect(panel.tagCancelButton.title == "正在取消…" && panel.tagDetailsButton.title == "收起安装日志", "task controls not localized")
+expect(model.installActivity == preserved, "language reset activity")
 panel.stopInstallProgress()
 panel.window?.isVisible = false
-expect(panel.tagInstallTimer == nil && !timer!.isValid, "closing leaked the timer")
+expect(panel.tagInstallTimer == nil && !timer!.isValid, "close leaked timer")
 panel.refreshInstallProgress()
-expect(panel.tagInstallTimer == nil, "hidden window restarted the timer")
+expect(panel.tagInstallTimer == nil, "hidden window restarted timer")
 panel.window?.isVisible = true
 panel.refreshInstallProgress()
-expect(panel.tagInstallTimer != nil, "reopening did not resume feedback")
-expect(DshVersionController.shared.installActivity == activity, "reopening reset install time")
-DshVersionController.shared.installActivity = nil
-panel.refreshInstallProgress()
-expect(panel.tagInstallTimer == nil, "completion leaked the timer")
-expect(panel.tagInstallProgress.isHidden && panel.tagInstallStatusLabel.isHidden, "completed progress stayed visible")
-expect(panel.tagRowHeightConstraint?.constant == 54, "completed row stayed expanded")
-expect(panel.preferencesCardHeightConstraint?.constant == 541, "completed card stayed expanded")
-print("PASS install progress: AppKit controls, elapsed timer, language, hide/reopen, cleanup")
+expect(panel.tagInstallTimer != nil && model.installActivity == preserved, "reopen lost task/timer")
+model.lastInstallLog = "retained final log"
+model.installActivity = nil
+for outcome: Localization.Key in [.installFinished, .installStopped, .installCancelled] {
+    panel.installOutcome = outcome
+    panel.refreshInstallProgress()
+    expect(panel.tagInstallStatusLabel.stringValue == L(outcome), "terminal outcome not rendered")
+    expect(panel.tagInstallTimer == nil && panel.tagInstallProgress.isHidden && panel.tagCancelButton.isHidden,
+           "terminal task still ticking/active")
+    expect(!panel.installTaskStack.isHidden && panel.tagLogText.string == "retained final log", "terminal log inaccessible")
+}
+panel.didClickInstallDetails()
+expect(panel.tagLogScroll.isHidden, "log disclosure did not collapse")
+print("PASS install progress: actual presentation, AppKit render, common-mode timer, cancel, localization, reduced motion, bounded log/selection, outcomes, close/reopen")
 '''
-with tempfile.TemporaryDirectory(prefix="dsh-install-progress-") as directory:
-    work = Path(directory)
-    swift = work / "main.swift"
-    swift.write_text("import Cocoa\n" + activity + "\n" + harness + methods + "\n}\n" + checks)
-    cache = work / "module-cache"
-    cache.mkdir()
-    env = dict(os.environ, CLANG_MODULE_CACHE_PATH=str(cache))
-    binary = work / "progress-check"
-    subprocess.run(["swiftc", "-Onone", "-module-cache-path", str(cache), str(swift),
-                    "-o", str(binary)], env=env, check=True)
-    pipe.run_fixture([str(binary)], env)
+fixture.compile_run(checks, "import Cocoa\n" + presentation + "\n" + harness + methods + "\n}\n")

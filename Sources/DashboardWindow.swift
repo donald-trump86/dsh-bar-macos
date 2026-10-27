@@ -42,7 +42,8 @@ func tagRowPresentation(
     installedTag: String?,
     isRunning: Bool,
     pendingRestart: Bool,
-    installActivity: InstallActivity? = nil
+    installActivity: InstallActivity? = nil,
+    allowsRetry: Bool = false
 ) -> TagRowPresentation {
     let options = state.options()
     let title = L(.installChannel)
@@ -67,9 +68,8 @@ func tagRowPresentation(
     let selected = SettingsManager.shared.preferredDshTag
     let selection = options.firstIndex { $0.tag == selected } ?? 0
     let popupTitle = titles.indices.contains(selection) ? titles[selection] : ""
-    // Nothing to install when no channel is known, or when the only channel the
-    // registry offers is the one already on disk. Reinstalling the same version
-    // is not a repair, and offering it invites a pointless click.
+    // A cancelled npm run may have partially changed the on-disk installation.
+    // Keep retry available even when the registry offers only its current tag.
     let hasOtherChannel = options.contains { $0.tag != installedTag }
 
     // A failed probe has nothing to offer, so its reason takes over the
@@ -90,21 +90,67 @@ func tagRowPresentation(
         popupTitle: popupTitle,
         popupEnabled: !installing && !options.isEmpty,
         installButtonTitle: button,
-        installButtonEnabled: hasOtherChannel && !installing,
+        installButtonEnabled: !installing && !options.isEmpty && (hasOtherChannel || allowsRetry),
         showsRestartNotice: pendingRestart && !installing
+    )
+}
+
+struct InstallProgressPresentation: Equatable {
+    let title: String
+    let metrics: String
+    let fraction: Double?
+    let canCancel: Bool
+}
+
+/// Download metrics describe only the principal archive, never npm dependencies.
+func installProgressPresentation(activity: InstallActivity, now: TimeInterval) -> InstallProgressPresentation {
+    let title: String
+    switch activity.phase {
+    case .resolving: title = L(.installResolving, ["tag": activity.tag])
+    case .downloading: title = L(.installDownloading)
+    case .verifying: title = L(.installVerifying)
+    case .installing: title = L(.installDependencies)
+    case .cancelling: title = L(.installCancelling)
+    }
+    var metrics = [L(.installElapsed, ["elapsed": activity.elapsed(at: now)])]
+    var fraction: Double?
+    if activity.phase == .downloading {
+        let received = max(0, activity.bytesReceived)
+        let size = ByteCountFormatter.string(fromByteCount: received, countStyle: .file)
+        if let total = activity.totalBytes, total > 0 {
+            fraction = min(1, Double(received) / Double(total))
+            let totalSize = ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
+            metrics.insert("\(size) / \(totalSize) · \(Int(fraction! * 100))%", at: 0)
+        } else {
+            metrics.insert(L(.installSizeUnknown, ["size": size]), at: 0)
+        }
+        let rate = activity.bytesPerSecond
+        if rate.isFinite && rate >= 1 && rate < Double(Int64.max) {
+            metrics.insert(ByteCountFormatter.string(fromByteCount: Int64(rate), countStyle: .file) + "/s", at: 1)
+            if let total = activity.totalBytes, total > received {
+                let remaining = Double(total - received) / rate
+                if remaining.isFinite && remaining >= 1 && remaining < 86400 {
+                    let seconds = Int(remaining.rounded(.up))
+                    metrics.append(L(.installRemaining, ["time": String(format: "%d:%02d", seconds / 60, seconds % 60)]))
+                }
+            }
+        } else {
+            metrics.insert(L(.installWaiting), at: 1)
+        }
+    }
+    return InstallProgressPresentation(
+        title: activity.version.map { "\(title) · \($0)" } ?? title,
+        metrics: metrics.joined(separator: "  ·  "),
+        fraction: fraction,
+        canCancel: activity.phase != .cancelling
     )
 }
 
 final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     static let shared = DashboardWindowController()
 
-    /// The header, service card and footer are pinned at fixed heights, so they
-    /// set the floor: 34 top + 72 header + 14 + 160 service + 14 + scroll +
-    /// 14 + 32 footer + 18 bottom. The preferences card is inside a scroll view
-    /// and no longer contributes its full 541pt to that sum — that is what
-    /// lets the panel be dragged shorter than its natural height.
-    private static let naturalContentHeight: CGFloat = 592
-    
+    private static let naturalContentHeight: CGFloat = 540
+
     // Status Badge UI
     private let statusBadge = NSBox()
     private let statusDot = NSBox()
@@ -125,7 +171,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     // Preferences UI
     private let portField = NSTextField()
     private let portResetButton = NSButton()
-    private let launchAtLoginCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let launchAtLoginCheckbox = NSSwitch()
     private let hotKeyButton = NSButton()
     private let hotKeyResetButton = NSButton()
     private let dshInfoLabel = NSTextField(labelWithString: L(.detectingDsh))
@@ -141,8 +187,15 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     private let tagInstallProgress = NSProgressIndicator()
     private let tagInstallStatusLabel = NSTextField(labelWithString: "")
     private var tagInstallTimer: Timer?
-    private var tagRowHeightConstraint: NSLayoutConstraint?
-    private var preferencesCardHeightConstraint: NSLayoutConstraint?
+    private let installTaskStack = NSStackView()
+    private let tagInstallMetricsLabel = NSTextField(wrappingLabelWithString: "")
+    private let tagCancelButton = NSButton()
+    private let tagDetailsButton = NSButton()
+    private let tagLogScroll = NSScrollView()
+    private let tagLogText = NSTextView()
+    private var showsInstallDetails = false
+    private var installOutcome: Localization.Key?
+
     /// Last probe result; the row re-renders from it whenever anything changes.
     private var tagProbeState: ProbeState = .idle
     /// The channel currently on disk, resolved from the last successful probe.
@@ -162,7 +215,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     private let updateInfoLabel = NSTextField(labelWithString: "")
     private let updateCheckButton = NSButton()
     private let autoUpdateCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
-    private let autoRestartCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let autoRestartCheckbox = NSSwitch()
     private let notificationInfoLabel = NSTextField(labelWithString: L(.notifNotChecked))
     private let notificationActionButton = NSButton()
     private let languagePopup = NSPopUpButton()
@@ -180,7 +233,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     
     init() {
         let window = DashboardPanelWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 540, height: 792),
+            contentRect: NSRect(x: 0, y: 0, width: 580, height: 800),
             styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -194,10 +247,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         // the normal level so it no longer covers whatever the user switches to.
         window.level = .floating
         window.backgroundColor = .clear
-        // AppKit restores the size across launches on its own, so nothing here
-        // needs to persist it. The floor is the height of the fixed-height rows
-        // in setupUI; below it those rows would be pushed outside the window.
-        // The preferences list scrolls, so it does not raise the floor.
+        // The entire settings document scrolls, including the service section.
         window.minSize = NSSize(width: 540, height: Self.naturalContentHeight)
         window.maxSize = NSSize(width: 900, height: 1200)
 
@@ -291,76 +341,55 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     }
     
     private func setupUI() {
-        guard let window = self.window else { return }
+        guard let window else { return }
+        let background = NSView()
+        window.backgroundColor = .windowBackgroundColor
+        window.contentView = background
 
-        let visualEffect = NSVisualEffectView()
-        visualEffect.material = .hudWindow
-        visualEffect.blendingMode = .behindWindow
-        visualEffect.state = .active
-        window.contentView = visualEffect
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        background.addSubview(scroll)
 
+        let document = NSView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = document
         let header = makeHeaderView()
-        let serviceCard = makeServiceCard()
-        let preferencesCard = makePreferencesCard()
+        let service = makeServiceCard()
+        let preferences = makePreferencesCard()
+        let contents = NSStackView(views: [header, service, preferences])
+        contents.orientation = .vertical
+        contents.alignment = .leading
+        contents.spacing = 16
+        contents.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(contents)
         let footer = makeFooterView()
-        [header, serviceCard, footer].forEach {
-            $0.translatesAutoresizingMaskIntoConstraints = false
-            visualEffect.addSubview($0)
-        }
-
-        // The preferences rows are a fixed 541pt stack, taller than the
-        // smallest panel worth showing. Scrolling them is what lets the window
-        // shrink below that height instead of clipping rows off the top.
-        let preferencesScroll = NSScrollView()
-        preferencesScroll.hasVerticalScroller = true
-        preferencesScroll.drawsBackground = false
-        preferencesScroll.translatesAutoresizingMaskIntoConstraints = false
-        visualEffect.addSubview(preferencesScroll)
-        // A scroll view manages its document view's frame itself, so the card
-        // has to be Auto Layout-driven or the constraints below do nothing.
-        preferencesCard.translatesAutoresizingMaskIntoConstraints = false
-        preferencesScroll.documentView = preferencesCard
-
-        // Natural height wins when the panel is short (the card scrolls). This
-        // one is only allowed to break when the panel is tall, so the card
-        // stretches to fill instead of leaving a gap above the footer.
-        let cardFillsClip = preferencesCard.heightAnchor
-            .constraint(greaterThanOrEqualTo: preferencesScroll.contentView.heightAnchor)
-        let cardIsNaturalHeight = preferencesCard.heightAnchor
-            .constraint(equalToConstant: 541)
-        cardIsNaturalHeight.priority = .defaultHigh
-        preferencesCardHeightConstraint = cardIsNaturalHeight
-
+        footer.translatesAutoresizingMaskIntoConstraints = false
+        background.addSubview(footer)
         NSLayoutConstraint.activate([
-            header.topAnchor.constraint(equalTo: visualEffect.topAnchor, constant: 34),
-            header.leadingAnchor.constraint(equalTo: visualEffect.leadingAnchor, constant: 24),
-            header.trailingAnchor.constraint(equalTo: visualEffect.trailingAnchor, constant: -24),
-            header.heightAnchor.constraint(equalToConstant: 72),
-
-            serviceCard.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 14),
-            serviceCard.leadingAnchor.constraint(equalTo: header.leadingAnchor),
-            serviceCard.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-            serviceCard.heightAnchor.constraint(equalToConstant: 160),
-
-            preferencesScroll.topAnchor.constraint(equalTo: serviceCard.bottomAnchor, constant: 14),
-            preferencesScroll.leadingAnchor.constraint(equalTo: header.leadingAnchor),
-            preferencesScroll.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-            preferencesScroll.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -14),
-            // Shortest slice of the preferences list still worth showing.
-            preferencesScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 180),
-
-            preferencesCard.topAnchor.constraint(equalTo: preferencesScroll.contentView.topAnchor),
-            preferencesCard.leadingAnchor.constraint(equalTo: preferencesScroll.contentView.leadingAnchor),
-            preferencesCard.widthAnchor.constraint(equalTo: preferencesScroll.contentView.widthAnchor),
-            cardFillsClip,
-            cardIsNaturalHeight,
-
-            footer.leadingAnchor.constraint(equalTo: header.leadingAnchor),
-            footer.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-            footer.bottomAnchor.constraint(equalTo: visualEffect.bottomAnchor, constant: -18),
-            footer.heightAnchor.constraint(equalToConstant: 32)
+            scroll.topAnchor.constraint(equalTo: background.topAnchor, constant: 30),
+            scroll.leadingAnchor.constraint(equalTo: background.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: background.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -12),
+            document.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            document.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            contents.topAnchor.constraint(equalTo: document.topAnchor, constant: 14),
+            contents.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 24),
+            contents.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -24),
+            contents.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -12),
+            header.widthAnchor.constraint(equalTo: contents.widthAnchor),
+            header.heightAnchor.constraint(equalToConstant: 60),
+            service.widthAnchor.constraint(equalTo: contents.widthAnchor),
+            service.heightAnchor.constraint(equalToConstant: 160),
+            preferences.widthAnchor.constraint(equalTo: contents.widthAnchor),
+            footer.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 24),
+            footer.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -24),
+            footer.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -16),
+            footer.heightAnchor.constraint(equalToConstant: 30)
         ])
-
         updateUrlDisplay(port: SettingsManager.shared.port)
     }
 
@@ -378,7 +407,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         iconView.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(iconView)
 
-        let titleLabel = makeLabel(L(.appName), size: 20, weight: .bold)
+        let titleLabel = makeLabel(L(.appName), size: 18, weight: .semibold)
         // Inside the app bundle this always resolves; the fallback only shows up
         // in tooling that runs the sources without an Info.plist.
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
@@ -414,8 +443,8 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 4),
             iconView.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: 64),
-            iconView.heightAnchor.constraint(equalToConstant: 64),
+            iconView.widthAnchor.constraint(equalToConstant: 48),
+            iconView.heightAnchor.constraint(equalToConstant: 48),
 
             titleStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 14),
             titleStack.centerYAnchor.constraint(equalTo: header.centerYAnchor),
@@ -515,459 +544,242 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     }
 
     private func makePreferencesCard() -> NSView {
-        let card = makeCardView()
-        let title = makeSectionTitle(L(.sectionPreferences))
-        card.addSubview(title)
-
-        let portRow = NSView()
-        portRow.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(portRow)
-
-        let portText = makeTextStack(title: L(.serverPort), description: L(.defaultPortLabel, ["port": "3080"]))
-        portRow.addSubview(portText)
-
         portField.stringValue = "\(SettingsManager.shared.port)"
-        portField.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .medium)
+        portField.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
         portField.alignment = .center
         portField.delegate = self
-        portField.translatesAutoresizingMaskIntoConstraints = false
-
-        portResetButton.title = L(.defaultButton)
-        portResetButton.bezelStyle = .rounded
-        portResetButton.controlSize = .small
-        portResetButton.target = self
-        portResetButton.action = #selector(didResetPort)
-        portResetButton.translatesAutoresizingMaskIntoConstraints = false
-
-        let portControls = NSStackView(views: [portField, portResetButton])
-        portControls.orientation = .horizontal
-        portControls.alignment = .centerY
-        portControls.spacing = 8
-        portControls.translatesAutoresizingMaskIntoConstraints = false
-        portRow.addSubview(portControls)
-
-        let separator1 = makeSeparator()
-        card.addSubview(separator1)
-
-        let shortcutRow = NSView()
-        shortcutRow.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(shortcutRow)
-
-        let shortcutText = makeTextStack(title: L(.globalShortcut), description: L(.globalShortcutDesc))
-        shortcutRow.addSubview(shortcutText)
+        portField.setAccessibilityLabel(L(.serverPort))
+        configureActionButton(portResetButton, title: L(.defaultButton), action: #selector(didResetPort))
+        portField.widthAnchor.constraint(equalToConstant: 72).isActive = true
+        let portControls = horizontalControls([portField, portResetButton])
 
         hotKeyButton.title = SettingsManager.shared.globalHotKeyDisplayString
-        hotKeyButton.bezelStyle = .rounded
-        hotKeyButton.target = self
-        hotKeyButton.action = #selector(didClickRecordHotKey)
-        hotKeyButton.translatesAutoresizingMaskIntoConstraints = false
+        configureActionButton(hotKeyButton, title: hotKeyButton.title, action: #selector(didClickRecordHotKey))
+        configureActionButton(hotKeyResetButton, title: L(.reset), action: #selector(didClickResetHotKey))
+        hotKeyButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
         updateHotKeyAppearance()
-
-        hotKeyResetButton.title = L(.reset)
-        hotKeyResetButton.bezelStyle = .rounded
-        hotKeyResetButton.controlSize = .small
-        hotKeyResetButton.target = self
-        hotKeyResetButton.action = #selector(didClickResetHotKey)
-        hotKeyResetButton.translatesAutoresizingMaskIntoConstraints = false
-
-        let shortcutControls = NSStackView(views: [hotKeyButton, hotKeyResetButton])
-        shortcutControls.orientation = .horizontal
-        shortcutControls.alignment = .centerY
-        shortcutControls.spacing = 8
-        shortcutControls.translatesAutoresizingMaskIntoConstraints = false
-        shortcutRow.addSubview(shortcutControls)
-
-        let separator2 = makeSeparator()
-        card.addSubview(separator2)
-
-        let loginRow = NSView()
-        loginRow.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(loginRow)
-
-        let loginText = makeTextStack(
-            title: L(.launchAtLogin),
-            description: L(.launchAtLoginDesc)
-        )
-        loginRow.addSubview(loginText)
+        let hotKeyControls = horizontalControls([hotKeyButton, hotKeyResetButton])
 
         launchAtLoginCheckbox.state = SettingsManager.shared.isLaunchAtLoginEnabled ? .on : .off
         launchAtLoginCheckbox.target = self
         launchAtLoginCheckbox.action = #selector(didToggleLaunchAtLogin)
-        launchAtLoginCheckbox.translatesAutoresizingMaskIntoConstraints = false
-        loginRow.addSubview(launchAtLoginCheckbox)
-
-        let separator3 = makeSeparator()
-        card.addSubview(separator3)
-
-        let recoveryRow = NSView()
-        recoveryRow.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(recoveryRow)
-
-        let recoveryText = makeTextStack(
-            title: L(.automaticRecovery),
-            description: L(.automaticRecoveryDesc)
-        )
-        recoveryRow.addSubview(recoveryText)
-
+        launchAtLoginCheckbox.setAccessibilityLabel(L(.launchAtLogin))
         autoRestartCheckbox.state = SettingsManager.shared.autoRestartEnabled ? .on : .off
         autoRestartCheckbox.target = self
         autoRestartCheckbox.action = #selector(didToggleAutoRestart)
-        autoRestartCheckbox.translatesAutoresizingMaskIntoConstraints = false
-        recoveryRow.addSubview(autoRestartCheckbox)
-
-        let separator4 = makeSeparator()
-        card.addSubview(separator4)
-
-        let notificationRow = NSView()
-        notificationRow.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(notificationRow)
-
-        notificationInfoLabel.font = NSFont.systemFont(ofSize: 11)
-        notificationInfoLabel.textColor = .secondaryLabelColor
-        notificationInfoLabel.lineBreakMode = .byTruncatingTail
-        notificationInfoLabel.translatesAutoresizingMaskIntoConstraints = false
-        let notificationText = makeTextStack(
-            title: L(.notifications),
-            description: L(.notificationsDesc)
-        )
-        notificationText.addArrangedSubview(notificationInfoLabel)
-        notificationRow.addSubview(notificationText)
-
-        notificationActionButton.title = L(.notifActionSettings)
-        notificationActionButton.bezelStyle = .rounded
-        notificationActionButton.controlSize = .small
-        notificationActionButton.target = self
-        notificationActionButton.action = #selector(didClickNotificationAction)
-        notificationActionButton.translatesAutoresizingMaskIntoConstraints = false
-        notificationRow.addSubview(notificationActionButton)
-
-        let separator5 = makeSeparator()
-        card.addSubview(separator5)
-
-        let languageRow = NSView()
-        languageRow.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(languageRow)
-
-        let languageText = makeTextStack(
-            title: L(.language),
-            description: L(.languageDesc)
-        )
-        languageRow.addSubview(languageText)
+        autoRestartCheckbox.setAccessibilityLabel(L(.automaticRecovery))
 
         languagePopup.removeAllItems()
-        for (index, language) in AppLanguage.allCases.enumerated() {
+        for language in AppLanguage.allCases {
             languagePopup.addItem(withTitle: language.displayName)
-            languagePopup.item(at: index)?.representedObject = language.rawValue
+            languagePopup.lastItem?.representedObject = language.rawValue
         }
         if let current = AppLanguage.allCases.firstIndex(of: SettingsManager.shared.language) {
             languagePopup.selectItem(at: current)
         }
         languagePopup.target = self
         languagePopup.action = #selector(didChangeLanguage)
-        languagePopup.controlSize = .small
-        languagePopup.translatesAutoresizingMaskIntoConstraints = false
-        languageRow.addSubview(languagePopup)
+        languagePopup.setAccessibilityLabel(L(.language))
+        languagePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 128).isActive = true
 
-        let separator6 = makeSeparator()
-        card.addSubview(separator6)
+        notificationInfoLabel.font = .systemFont(ofSize: 12)
+        notificationInfoLabel.textColor = .secondaryLabelColor
+        configureActionButton(notificationActionButton, title: L(.notifActionSettings), action: #selector(didClickNotificationAction))
+        let notificationText = makeTextStack(title: L(.notifications), description: L(.notificationsDesc))
+        notificationInfoLabel.lineBreakMode = .byWordWrapping
+        notificationInfoLabel.maximumNumberOfLines = 0
+        notificationText.addArrangedSubview(notificationInfoLabel)
+        notificationInfoLabel.widthAnchor.constraint(equalTo: notificationText.widthAnchor).isActive = true
 
-        let dshRow = NSView()
-        dshRow.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(dshRow)
-
-        let dshTitleLabel = makeLabel(L(.dshCommandLine), size: 13, weight: .medium)
-        dshInfoLabel.font = NSFont.systemFont(ofSize: 11)
+        dshInfoLabel.font = .systemFont(ofSize: 12)
         dshInfoLabel.textColor = .secondaryLabelColor
         dshInfoLabel.lineBreakMode = .byTruncatingMiddle
-        dshInfoLabel.translatesAutoresizingMaskIntoConstraints = false
-        let dshText = NSStackView(views: [dshTitleLabel, dshInfoLabel])
-        dshText.orientation = .vertical
-        dshText.alignment = .leading
-        dshText.spacing = 1
-        dshText.translatesAutoresizingMaskIntoConstraints = false
-        dshText.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        dshRow.addSubview(dshText)
+        configureActionButton(dshActionButton, title: L(.recheck), action: #selector(didClickDshAction))
+        let dshText = dynamicTextStack(title: L(.dshCommandLine), label: dshInfoLabel)
 
-        dshActionButton.title = L(.recheck)
-        dshActionButton.bezelStyle = .rounded
-        dshActionButton.controlSize = .small
-        dshActionButton.target = self
-        dshActionButton.action = #selector(didClickDshAction)
-        dshActionButton.translatesAutoresizingMaskIntoConstraints = false
-        dshRow.addSubview(dshActionButton)
-
-        let separator7 = makeSeparator()
-        card.addSubview(separator7)
-
-        let tagRow = NSView()
-        tagRow.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(tagRow)
-
-        tagInfoLabel.font = NSFont.systemFont(ofSize: 11)
+        tagInfoLabel.font = .systemFont(ofSize: 12)
         tagInfoLabel.textColor = .secondaryLabelColor
-        tagInfoLabel.lineBreakMode = .byTruncatingTail
-        tagInfoLabel.translatesAutoresizingMaskIntoConstraints = false
-        // The description this row renders is dynamic (a probe failure replaces
-        // it), so `tagInfoLabel` is substituted into the stack the way
-        // `notificationInfoLabel` is, rather than the stack's own static label
-        // being hunted for later. Unlike the notification row, this one's static
-        // description and its live one are the SAME sentence, so keeping both
-        // would draw the line twice; the stack's placeholder is dropped and
-        // `tagInfoLabel` takes its slot, leaving the same two views every other
-        // row has.
-        let tagText = makeTextStack(
-            title: L(.installChannel),
-            description: L(.installChannelDesc)
-        )
-        if let placeholder = tagText.arrangedSubviews.last {
-            tagText.removeArrangedSubview(placeholder)
-            placeholder.removeFromSuperview()
-        }
-        tagText.addArrangedSubview(tagInfoLabel)
-        tagRow.addSubview(tagText)
-
+        let channelText = dynamicTextStack(title: L(.installChannel), label: tagInfoLabel)
         tagPopup.removeAllItems()
         tagPopup.target = self
         tagPopup.action = #selector(didChangeTag)
-        tagPopup.controlSize = .small
-        tagPopup.translatesAutoresizingMaskIntoConstraints = false
-        tagRow.addSubview(tagPopup)
-
+        tagPopup.setAccessibilityLabel(L(.installChannel))
         configureActionButton(tagInstallButton, title: L(.installEllipsis), action: #selector(didClickInstallTag))
-        tagInstallButton.controlSize = .small
-        tagRow.addSubview(tagInstallButton)
+        let channelControls = horizontalControls([tagPopup, tagInstallButton])
+        tagPopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        tagPopup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        tagPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
+        let channel = NSStackView(views: [channelText, channelControls])
+        channel.orientation = .vertical
+        channel.alignment = .leading
+        channel.spacing = 10
+        channelText.widthAnchor.constraint(equalTo: channel.widthAnchor).isActive = true
+        channelControls.widthAnchor.constraint(equalTo: channel.widthAnchor).isActive = true
 
-        tagInstallProgress.style = .bar
-        tagInstallProgress.isIndeterminate = true
-        tagInstallProgress.usesThreadedAnimation = true
-        tagInstallProgress.translatesAutoresizingMaskIntoConstraints = false
-        tagRow.addSubview(tagInstallProgress)
-        tagInstallStatusLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        tagInstallStatusLabel.textColor = .secondaryLabelColor
-        tagInstallStatusLabel.lineBreakMode = .byTruncatingMiddle
-        tagInstallStatusLabel.translatesAutoresizingMaskIntoConstraints = false
-        tagRow.addSubview(tagInstallStatusLabel)
-        tagRowHeightConstraint = tagRow.heightAnchor.constraint(equalToConstant: 54)
+        makeInstallTaskView()
 
-        let separator8 = makeSeparator()
-        card.addSubview(separator8)
-
-        let updateRow = NSView()
-        updateRow.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(updateRow)
-
-        updateInfoLabel.font = NSFont.systemFont(ofSize: 11)
+        updateInfoLabel.font = .systemFont(ofSize: 12)
         updateInfoLabel.textColor = .secondaryLabelColor
-        updateInfoLabel.lineBreakMode = .byTruncatingTail
-        updateInfoLabel.translatesAutoresizingMaskIntoConstraints = false
         updateInfoLabel.stringValue = L(.updateCurrentVersion, ["version": UpdateManager.shared.currentVersion])
-        // Same substitution as `tagInfoLabel` above: the row's description is
-        // the live version line, so the stack's placeholder is dropped and
-        // `updateInfoLabel` takes its slot.
-        let updateText = makeTextStack(
-            title: L(.softwareUpdates),
-            description: L(.updateCurrentVersion, ["version": UpdateManager.shared.currentVersion])
-        )
-        if let placeholder = updateText.arrangedSubviews.last {
-            updateText.removeArrangedSubview(placeholder)
-            placeholder.removeFromSuperview()
-        }
-        updateText.addArrangedSubview(updateInfoLabel)
-        updateRow.addSubview(updateText)
-
+        let updateText = dynamicTextStack(title: L(.barUpdates), label: updateInfoLabel)
         configureActionButton(updateCheckButton, title: L(.updateCheckNow), action: #selector(didClickCheckForUpdates))
-        updateCheckButton.controlSize = .small
         updateCheckButton.isEnabled = UpdateManager.shared.canCheckForUpdates
-        updateRow.addSubview(updateCheckButton)
-
-        // Read-only initialization: the flag is written only from
-        // `didToggleAutoUpdates`, so loading the row can never silently turn
-        // the user's choice off and on again.
         autoUpdateCheckbox.title = L(.autoCheckUpdates)
         autoUpdateCheckbox.state = UpdateManager.shared.automaticallyChecksForUpdates ? .on : .off
         autoUpdateCheckbox.target = self
         autoUpdateCheckbox.action = #selector(didToggleAutoUpdates)
-        autoUpdateCheckbox.translatesAutoresizingMaskIntoConstraints = false
-        updateRow.addSubview(autoUpdateCheckbox)
+        let update = NSStackView(views: [settingsRow(text: updateText, control: updateCheckButton), autoUpdateCheckbox])
+        update.orientation = .vertical
+        update.alignment = .leading
+        update.spacing = 8
+        update.arrangedSubviews[0].widthAnchor.constraint(equalTo: update.widthAnchor).isActive = true
 
-        NSLayoutConstraint.activate([
-            title.topAnchor.constraint(equalTo: card.topAnchor, constant: 15),
-            title.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 18),
-            title.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -18),
-
-            portRow.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 7),
-            portRow.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
-            portRow.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
-            portRow.heightAnchor.constraint(equalToConstant: 54),
-
-            portText.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
-            portText.centerYAnchor.constraint(equalTo: portRow.centerYAnchor),
-            portText.trailingAnchor.constraint(lessThanOrEqualTo: portControls.leadingAnchor, constant: -12),
-            portControls.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            portControls.centerYAnchor.constraint(equalTo: portRow.centerYAnchor),
-            portField.widthAnchor.constraint(equalToConstant: 76),
-            portField.heightAnchor.constraint(equalToConstant: 26),
-            portResetButton.widthAnchor.constraint(equalToConstant: 68),
-            portResetButton.heightAnchor.constraint(equalToConstant: 26),
-
-            separator1.topAnchor.constraint(equalTo: portRow.bottomAnchor),
-            separator1.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
-            separator1.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            separator1.heightAnchor.constraint(equalToConstant: 1),
-
-            shortcutRow.topAnchor.constraint(equalTo: separator1.bottomAnchor),
-            shortcutRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
-            shortcutRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            shortcutRow.heightAnchor.constraint(equalToConstant: 60),
-
-            shortcutText.leadingAnchor.constraint(equalTo: shortcutRow.leadingAnchor),
-            shortcutText.centerYAnchor.constraint(equalTo: shortcutRow.centerYAnchor),
-            shortcutText.trailingAnchor.constraint(lessThanOrEqualTo: shortcutControls.leadingAnchor, constant: -12),
-            shortcutControls.trailingAnchor.constraint(equalTo: shortcutRow.trailingAnchor),
-            shortcutControls.centerYAnchor.constraint(equalTo: shortcutRow.centerYAnchor),
-            hotKeyButton.widthAnchor.constraint(equalToConstant: 118),
-            hotKeyButton.heightAnchor.constraint(equalToConstant: 30),
-            hotKeyResetButton.widthAnchor.constraint(equalToConstant: 60),
-            hotKeyResetButton.heightAnchor.constraint(equalToConstant: 26),
-
-            separator2.topAnchor.constraint(equalTo: shortcutRow.bottomAnchor),
-            separator2.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
-            separator2.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            separator2.heightAnchor.constraint(equalToConstant: 1),
-
-            loginRow.topAnchor.constraint(equalTo: separator2.bottomAnchor),
-            loginRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
-            loginRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            loginRow.heightAnchor.constraint(equalToConstant: 54),
-
-            loginText.leadingAnchor.constraint(equalTo: loginRow.leadingAnchor),
-            loginText.centerYAnchor.constraint(equalTo: loginRow.centerYAnchor),
-            loginText.trailingAnchor.constraint(lessThanOrEqualTo: launchAtLoginCheckbox.leadingAnchor, constant: -12),
-            launchAtLoginCheckbox.trailingAnchor.constraint(equalTo: loginRow.trailingAnchor),
-            launchAtLoginCheckbox.centerYAnchor.constraint(equalTo: loginRow.centerYAnchor),
-
-            separator3.topAnchor.constraint(equalTo: loginRow.bottomAnchor),
-            separator3.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
-            separator3.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            separator3.heightAnchor.constraint(equalToConstant: 1),
-
-            recoveryRow.topAnchor.constraint(equalTo: separator3.bottomAnchor),
-            recoveryRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
-            recoveryRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            recoveryRow.heightAnchor.constraint(equalToConstant: 54),
-
-            recoveryText.leadingAnchor.constraint(equalTo: recoveryRow.leadingAnchor),
-            recoveryText.centerYAnchor.constraint(equalTo: recoveryRow.centerYAnchor),
-            recoveryText.trailingAnchor.constraint(lessThanOrEqualTo: autoRestartCheckbox.leadingAnchor, constant: -12),
-            autoRestartCheckbox.trailingAnchor.constraint(equalTo: recoveryRow.trailingAnchor),
-            autoRestartCheckbox.centerYAnchor.constraint(equalTo: recoveryRow.centerYAnchor),
-
-            separator4.topAnchor.constraint(equalTo: recoveryRow.bottomAnchor),
-            separator4.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
-            separator4.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            separator4.heightAnchor.constraint(equalToConstant: 1),
-
-            notificationRow.topAnchor.constraint(equalTo: separator4.bottomAnchor),
-            notificationRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
-            notificationRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            notificationRow.heightAnchor.constraint(equalToConstant: 54),
-
-            notificationText.leadingAnchor.constraint(equalTo: notificationRow.leadingAnchor),
-            notificationText.centerYAnchor.constraint(equalTo: notificationRow.centerYAnchor),
-            notificationText.trailingAnchor.constraint(lessThanOrEqualTo: notificationActionButton.leadingAnchor, constant: -12),
-            notificationActionButton.trailingAnchor.constraint(equalTo: notificationRow.trailingAnchor),
-            notificationActionButton.centerYAnchor.constraint(equalTo: notificationRow.centerYAnchor),
-
-            separator5.topAnchor.constraint(equalTo: notificationRow.bottomAnchor),
-            separator5.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
-            separator5.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            separator5.heightAnchor.constraint(equalToConstant: 1),
-
-            languageRow.topAnchor.constraint(equalTo: separator5.bottomAnchor),
-            languageRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
-            languageRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            languageRow.heightAnchor.constraint(equalToConstant: 54),
-
-            languageText.leadingAnchor.constraint(equalTo: languageRow.leadingAnchor),
-            languageText.centerYAnchor.constraint(equalTo: languageRow.centerYAnchor),
-            languageText.trailingAnchor.constraint(lessThanOrEqualTo: languagePopup.leadingAnchor, constant: -12),
-            languagePopup.trailingAnchor.constraint(equalTo: languageRow.trailingAnchor),
-            languagePopup.centerYAnchor.constraint(equalTo: languageRow.centerYAnchor),
-            languagePopup.widthAnchor.constraint(equalToConstant: 148),
-
-            separator6.topAnchor.constraint(equalTo: languageRow.bottomAnchor),
-            separator6.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
-            separator6.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            separator6.heightAnchor.constraint(equalToConstant: 1),
-
-            dshRow.topAnchor.constraint(equalTo: separator6.bottomAnchor),
-            dshRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
-            dshRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            dshRow.heightAnchor.constraint(equalToConstant: 54),
-
-            separator7.topAnchor.constraint(equalTo: dshRow.bottomAnchor),
-            separator7.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
-            separator7.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            separator7.heightAnchor.constraint(equalToConstant: 1),
-
-            tagRow.topAnchor.constraint(equalTo: separator7.bottomAnchor),
-            tagRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
-            tagRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            tagRowHeightConstraint!,
-            tagInstallProgress.leadingAnchor.constraint(equalTo: tagRow.leadingAnchor),
-            tagInstallProgress.trailingAnchor.constraint(equalTo: tagRow.trailingAnchor),
-            tagInstallProgress.topAnchor.constraint(equalTo: tagRow.topAnchor, constant: 51),
-            tagInstallProgress.heightAnchor.constraint(equalToConstant: 4),
-            tagInstallStatusLabel.leadingAnchor.constraint(equalTo: tagRow.leadingAnchor),
-            tagInstallStatusLabel.trailingAnchor.constraint(equalTo: tagRow.trailingAnchor),
-            tagInstallStatusLabel.topAnchor.constraint(equalTo: tagRow.topAnchor, constant: 61),
-
-            separator8.topAnchor.constraint(equalTo: tagRow.bottomAnchor),
-            separator8.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
-            separator8.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            separator8.heightAnchor.constraint(equalToConstant: 1),
-
-            updateRow.topAnchor.constraint(equalTo: separator8.bottomAnchor),
-            updateRow.leadingAnchor.constraint(equalTo: portRow.leadingAnchor),
-            updateRow.trailingAnchor.constraint(equalTo: portRow.trailingAnchor),
-            updateRow.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
-
-            updateText.leadingAnchor.constraint(equalTo: updateRow.leadingAnchor),
-            updateText.centerYAnchor.constraint(equalTo: updateRow.centerYAnchor),
-            updateText.trailingAnchor.constraint(lessThanOrEqualTo: autoUpdateCheckbox.leadingAnchor, constant: -12),
-            autoUpdateCheckbox.centerYAnchor.constraint(equalTo: updateRow.centerYAnchor),
-            updateCheckButton.leadingAnchor.constraint(equalTo: autoUpdateCheckbox.trailingAnchor, constant: 12),
-            updateCheckButton.trailingAnchor.constraint(equalTo: updateRow.trailingAnchor),
-            updateCheckButton.centerYAnchor.constraint(equalTo: updateRow.centerYAnchor),
-            updateCheckButton.widthAnchor.constraint(equalToConstant: 84),
-            updateCheckButton.heightAnchor.constraint(equalToConstant: 26),
-
-            tagText.leadingAnchor.constraint(equalTo: tagRow.leadingAnchor),
-            tagText.centerYAnchor.constraint(equalTo: tagRow.topAnchor, constant: 27),
-            tagText.trailingAnchor.constraint(lessThanOrEqualTo: tagPopup.leadingAnchor, constant: -12),
-            tagPopup.trailingAnchor.constraint(equalTo: tagInstallButton.leadingAnchor, constant: -8),
-            tagPopup.centerYAnchor.constraint(equalTo: tagRow.topAnchor, constant: 27),
-            // 210pt fits the widest localized installed marker ("latest
-            // (0.2.0-rc.2, installed)", measured at 204pt). A narrower popup
-            // truncates every one of them.
-            tagPopup.widthAnchor.constraint(equalToConstant: 210),
-            tagPopup.heightAnchor.constraint(equalToConstant: 20),
-
-            tagInstallButton.trailingAnchor.constraint(equalTo: tagRow.trailingAnchor),
-            tagInstallButton.centerYAnchor.constraint(equalTo: tagRow.topAnchor, constant: 27),
-            tagInstallButton.widthAnchor.constraint(equalToConstant: 84),
-            tagInstallButton.heightAnchor.constraint(equalToConstant: 26),
-
-            dshText.leadingAnchor.constraint(equalTo: dshRow.leadingAnchor),
-            dshText.centerYAnchor.constraint(equalTo: dshRow.centerYAnchor),
-            dshText.trailingAnchor.constraint(lessThanOrEqualTo: dshActionButton.leadingAnchor, constant: -12),
-            dshActionButton.trailingAnchor.constraint(equalTo: dshRow.trailingAnchor),
-            dshActionButton.centerYAnchor.constraint(equalTo: dshRow.centerYAnchor),
-            dshActionButton.widthAnchor.constraint(equalToConstant: 78),
-            dshActionButton.heightAnchor.constraint(equalToConstant: 26)
+        let service = settingsGroup(title: L(.settingsService), symbol: "server.rack", rows: [
+            settingsRow(text: makeTextStack(title: L(.serverPort), description: L(.defaultPortLabel, ["port": "3080"])), control: portControls),
+            settingsRow(text: makeTextStack(title: L(.automaticRecovery), description: L(.automaticRecoveryDesc)), control: autoRestartCheckbox)
         ])
+        let versions = settingsGroup(title: L(.settingsVersions), symbol: "arrow.down.circle", rows: [
+            settingsRow(text: dshText, control: dshActionButton), channel, installTaskStack, update
+        ])
+        let general = settingsGroup(title: L(.settingsGeneral), symbol: "gearshape", rows: [
+            settingsRow(text: makeTextStack(title: L(.launchAtLogin), description: L(.launchAtLoginDesc)), control: launchAtLoginCheckbox),
+            settingsRow(text: makeTextStack(title: L(.globalShortcut), description: L(.globalShortcutDesc)), control: hotKeyControls),
+            settingsRow(text: notificationText, control: notificationActionButton),
+            settingsRow(text: makeTextStack(title: L(.language), description: L(.languageDesc)), control: languagePopup)
+        ])
+        let groups = NSStackView(views: [service, versions, general])
+        groups.orientation = .vertical
+        groups.alignment = .leading
+        groups.spacing = 20
+        for group in groups.arrangedSubviews {
+            group.widthAnchor.constraint(equalTo: groups.widthAnchor).isActive = true
+        }
+        return groups
+    }
 
-        return card
+    private func horizontalControls(_ views: [NSView]) -> NSStackView {
+        let stack = NSStackView(views: views)
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        views.forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
+        return stack
+    }
+
+    private func settingsRow(text: NSView, control: NSView) -> NSView {
+        let row = NSView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(text)
+        row.addSubview(control)
+        text.translatesAutoresizingMaskIntoConstraints = false
+        control.translatesAutoresizingMaskIntoConstraints = false
+        control.setContentHuggingPriority(.required, for: .horizontal)
+        control.setContentCompressionResistancePriority(.required, for: .horizontal)
+        NSLayoutConstraint.activate([
+            text.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+            text.topAnchor.constraint(equalTo: row.topAnchor),
+            text.bottomAnchor.constraint(equalTo: row.bottomAnchor),
+            text.trailingAnchor.constraint(equalTo: control.leadingAnchor, constant: -20),
+            control.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+            control.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            row.heightAnchor.constraint(greaterThanOrEqualTo: control.heightAnchor)
+        ])
+        return row
+    }
+
+    private func dynamicTextStack(title: String, label: NSTextField) -> NSStackView {
+        let stack = NSStackView(views: [makeLabel(title, size: 13, weight: .medium), label])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 4
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        label.maximumNumberOfLines = 0
+        label.lineBreakMode = .byWordWrapping
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        label.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        return stack
+    }
+
+    private func settingsGroup(title: String, symbol: String, rows: [NSView]) -> NSView {
+        let icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
+        icon.contentTintColor = .secondaryLabelColor
+        let heading = horizontalControls([icon, makeLabel(title, size: 13, weight: .semibold)])
+        let card = makeCardView()
+        let body = NSStackView(views: rows)
+        body.orientation = .vertical
+        body.alignment = .leading
+        body.spacing = 16
+        body.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(body)
+        for row in rows {
+            row.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
+        }
+        NSLayoutConstraint.activate([
+            body.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
+            body.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
+            body.topAnchor.constraint(equalTo: card.topAnchor, constant: 16),
+            body.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -16)
+        ])
+        let group = NSStackView(views: [heading, card])
+        group.orientation = .vertical
+        group.alignment = .leading
+        group.spacing = 8
+        card.widthAnchor.constraint(equalTo: group.widthAnchor).isActive = true
+        return group
+    }
+
+    private func makeInstallTaskView() {
+        installTaskStack.arrangedSubviews.forEach {
+            installTaskStack.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        installTaskStack.orientation = .vertical
+        installTaskStack.alignment = .leading
+        installTaskStack.spacing = 8
+        tagInstallStatusLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        tagInstallStatusLabel.lineBreakMode = .byWordWrapping
+        tagInstallStatusLabel.maximumNumberOfLines = 0
+        configureActionButton(tagCancelButton, title: L(.cancel), action: #selector(didClickCancelInstall))
+        tagCancelButton.toolTip = L(.installCancelHint)
+        let heading = settingsRow(text: tagInstallStatusLabel, control: tagCancelButton)
+        tagInstallProgress.style = .bar
+        tagInstallProgress.isIndeterminate = true
+        tagInstallProgress.minValue = 0
+        tagInstallProgress.maxValue = 1
+        tagInstallProgress.usesThreadedAnimation = true
+        tagInstallMetricsLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        tagInstallMetricsLabel.textColor = .secondaryLabelColor
+        configureActionButton(tagDetailsButton, title: L(.installShowDetails), action: #selector(didClickInstallDetails))
+        tagDetailsButton.bezelStyle = .inline
+        tagDetailsButton.font = .systemFont(ofSize: 11)
+        tagLogScroll.hasVerticalScroller = true
+        tagLogScroll.drawsBackground = false
+        tagLogScroll.borderType = .bezelBorder
+        tagLogScroll.documentView = tagLogText
+        tagLogText.isEditable = false
+        tagLogText.isSelectable = true
+        tagLogText.isRichText = false
+        tagLogText.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        tagLogText.textColor = .labelColor
+        tagLogText.backgroundColor = .textBackgroundColor
+        tagLogText.textContainerInset = NSSize(width: 8, height: 8)
+        tagLogText.isVerticallyResizable = true
+        tagLogText.isHorizontallyResizable = false
+        tagLogText.autoresizingMask = [.width]
+        tagLogText.textContainer?.widthTracksTextView = true
+        tagLogText.setAccessibilityLabel(L(.installShowDetails))
+        for view in [heading, tagInstallProgress, tagInstallMetricsLabel, tagDetailsButton, tagLogScroll] {
+            installTaskStack.addArrangedSubview(view)
+            view.translatesAutoresizingMaskIntoConstraints = false
+            if view !== tagDetailsButton {
+                view.widthAnchor.constraint(equalTo: installTaskStack.widthAnchor).isActive = true
+            }
+        }
+        tagLogScroll.heightAnchor.constraint(equalToConstant: 132).isActive = true
+        tagInstallProgress.heightAnchor.constraint(equalToConstant: 5).isActive = true
+        refreshInstallProgress()
     }
 
     private func makeFooterView() -> NSView {
@@ -1015,22 +827,25 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     }
 
     private func makeCardView() -> NSView {
-        let view = NSView()
-        view.wantsLayer = true
-        view.layer?.cornerRadius = 12
-        view.layer?.backgroundColor = NSColor.textColor.withAlphaComponent(0.04).cgColor
-        view.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.2).cgColor
-        view.layer?.borderWidth = 1
+        let view = NSBox()
+        view.boxType = .custom
+        view.titlePosition = .noTitle
+        view.cornerRadius = 10
+        view.fillColor = .controlBackgroundColor
+        view.borderColor = .separatorColor
+        view.borderWidth = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 1 : 0.5
+        view.contentViewMargins = .zero
         return view
     }
 
     private func makeInsetView() -> NSView {
-        let view = NSView()
-        view.wantsLayer = true
-        view.layer?.cornerRadius = 8
-        view.layer?.backgroundColor = NSColor.textColor.withAlphaComponent(0.06).cgColor
-        view.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.2).cgColor
-        view.layer?.borderWidth = 1
+        let view = NSBox()
+        view.boxType = .custom
+        view.titlePosition = .noTitle
+        view.cornerRadius = 6
+        view.fillColor = .windowBackgroundColor
+        view.borderWidth = 0
+        view.contentViewMargins = .zero
         return view
     }
 
@@ -1042,19 +857,22 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     }
 
     private func makeSectionTitle(_ text: String) -> NSTextField {
-        makeLabel(text, size: 11, weight: .bold, color: .tertiaryLabelColor)
+        makeLabel(text, size: 12, weight: .semibold, color: .secondaryLabelColor)
     }
 
     private func makeTextStack(title: String, description: String) -> NSStackView {
         let titleLabel = makeLabel(title, size: 13, weight: .medium)
-        let descriptionLabel = makeLabel(description, size: 11, color: .secondaryLabelColor)
-        descriptionLabel.lineBreakMode = .byTruncatingTail
+        let descriptionLabel = makeLabel(description, size: 12, color: .secondaryLabelColor)
+        descriptionLabel.lineBreakMode = .byWordWrapping
+        descriptionLabel.maximumNumberOfLines = 0
+        descriptionLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let stack = NSStackView(views: [titleLabel, descriptionLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 1
+        stack.spacing = 4
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        descriptionLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         return stack
     }
 
@@ -1197,7 +1015,8 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             installedTag: installedTagName,
             isRunning: ServiceManager.shared.isRunning,
             pendingRestart: pendingTagRestart,
-            installActivity: DshVersionController.shared.installActivity
+            installActivity: DshVersionController.shared.installActivity,
+            allowsRetry: installOutcome == .installCancelled || installOutcome == .installStopped
         )
 
         let options = tagProbeState.options()
@@ -1225,24 +1044,46 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     }
 
     private func refreshInstallProgress() {
-        let activity = DshVersionController.shared.installActivity
+        let controller = DshVersionController.shared
+        let activity = controller.installActivity
         let visible = activity != nil && window?.isVisible == true
+        installTaskStack.isHidden = activity == nil && installOutcome == nil && controller.lastInstallLog.isEmpty
         tagInstallProgress.isHidden = activity == nil
-        tagInstallStatusLabel.isHidden = activity == nil
-        tagRowHeightConstraint?.constant = activity == nil ? 54 : 92
-        preferencesCardHeightConstraint?.constant = activity == nil ? 541 : 579
+        tagCancelButton.isHidden = activity == nil
+        tagInstallMetricsLabel.isHidden = activity == nil
         if let activity {
-            tagInstallStatusLabel.stringValue = L(.installProgressStatus, [
-                "tag": activity.tag,
-                "elapsed": activity.elapsed(at: ProcessInfo.processInfo.systemUptime)
-            ])
-            tagInstallStatusLabel.toolTip = tagInstallStatusLabel.stringValue
-            tagInstallProgress.setAccessibilityLabel(tagInstallStatusLabel.stringValue)
+            let presentation = installProgressPresentation(activity: activity, now: ProcessInfo.processInfo.systemUptime)
+            tagInstallStatusLabel.stringValue = presentation.title
+            tagInstallStatusLabel.textColor = .labelColor
+            tagInstallMetricsLabel.stringValue = presentation.metrics
+            tagInstallProgress.isIndeterminate = presentation.fraction == nil
+            if let fraction = presentation.fraction { tagInstallProgress.doubleValue = fraction }
+            tagCancelButton.isEnabled = presentation.canCancel
+            tagCancelButton.title = presentation.canCancel ? L(.cancel) : L(.installCancelling)
+            tagInstallProgress.setAccessibilityLabel(presentation.title)
+            tagInstallMetricsLabel.setAccessibilityLabel(presentation.metrics)
+        } else if let outcome = installOutcome {
+            tagInstallStatusLabel.stringValue = L(outcome)
+            tagInstallStatusLabel.textColor = outcome == .installStopped ? .systemRed : .secondaryLabelColor
+        }
+        tagDetailsButton.title = showsInstallDetails ? L(.installHideDetails) : L(.installShowDetails)
+        tagDetailsButton.state = showsInstallDetails ? .on : .off
+        tagLogScroll.isHidden = !showsInstallDetails
+        let log = activity?.outputTail ?? controller.lastInstallLog
+        let renderedLog = log.isEmpty ? L(.installLogEmpty) : log
+        if tagLogText.string != renderedLog {
+            let atBottom = tagLogScroll.contentView.bounds.maxY >= tagLogText.bounds.height - 24
+            tagLogText.string = renderedLog
+            if atBottom { tagLogText.scrollToEndOfDocument(nil) }
         }
         if visible {
-            tagInstallProgress.startAnimation(nil)
+            if tagInstallProgress.isIndeterminate && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                tagInstallProgress.startAnimation(nil)
+            } else {
+                tagInstallProgress.stopAnimation(nil)
+            }
             if tagInstallTimer == nil {
-                let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+                let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
                     self?.refreshInstallProgress()
                 }
                 tagInstallTimer = timer
@@ -1251,6 +1092,16 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         } else {
             stopInstallProgress()
         }
+    }
+
+    @objc private func didClickCancelInstall() {
+        DshVersionController.shared.cancelInstall()
+        refreshInstallProgress()
+    }
+
+    @objc private func didClickInstallDetails() {
+        showsInstallDetails.toggle()
+        refreshInstallProgress()
     }
 
     @objc private func stopInstallProgress() {
@@ -1431,8 +1282,8 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         NSApplication.shared.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = L(.installConfirmTitle)
-        // The command is shown verbatim so the user approves the exact thing
-        // that will run, global-prefix permissions included.
+        // Show the requested package/channel. The dialog explains that its
+        // verified archive is downloaded first, then passed to the detected npm.
         alert.informativeText = L(.installConfirmBody, ["command": command])
         alert.alertStyle = .warning
         alert.addButton(withTitle: L(.installEllipsis))
@@ -1440,13 +1291,15 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         SettingsManager.shared.preferredDshTag = tag
+        installOutcome = nil
+        showsInstallDetails = false
         tagInstallButton.isEnabled = false
         let wasRunning = ServiceManager.shared.isRunning
         DshVersionController.shared.install(tag: tag) { [weak self] result in
-            guard let self else { return }
-            self.refreshTagRow()
+            guard let self, !DshVersionController.shared.isTerminating else { return }
             switch result {
             case .success:
+                self.installOutcome = .installFinished
                 // Re-probe rather than assume: npm can exit 0 having changed
                 // nothing, and the honest answer is the one the binary reports.
                 self.pendingTagRestart = wasRunning
@@ -1454,12 +1307,18 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
                 ServiceManager.shared.detectDshInstallation()
                 self.loadTagOptions()
             case .failure(let error):
-                self.showAlert(
-                    title: L(.installFailedTitle),
-                    message: error.localizedDescription
-                )
-                self.refreshTagRow()
+                if case .cancelled = error as? DshVersionControllerError {
+                    self.installOutcome = .installCancelled
+                } else {
+                    self.installOutcome = .installStopped
+                    self.showsInstallDetails = true
+                    self.showAlert(title: L(.installFailedTitle), message: error.localizedDescription)
+                }
+                // Cancellation can interrupt npm after it has changed files.
+                ServiceManager.shared.detectDshInstallation()
+                self.loadTagOptions()
             }
+            self.refreshTagRow()
         }
         refreshTagRow()
     }
