@@ -40,6 +40,18 @@ enum PermissionSettingsTarget: CaseIterable {
     }
 }
 
+private final class PermissionsScrollView: NSScrollView {
+    var documentWidthConstraint: NSLayoutConstraint?
+
+    override func tile() {
+        super.tile()
+        // Legacy scrollers change the clip frame outside Auto Layout.
+        guard let width = documentWidthConstraint,
+              width.constant != contentView.bounds.width else { return }
+        width.constant = contentView.bounds.width
+    }
+}
+
 final class PermissionsWindowController: NSWindowController {
     static let shared = PermissionsWindowController()
     static let guideVersion = 1
@@ -89,7 +101,7 @@ final class PermissionsWindowController: NSWindowController {
         let content = NSView()
         window.contentView = content
 
-        let scroll = NSScrollView()
+        let scroll = PermissionsScrollView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
@@ -116,10 +128,12 @@ final class PermissionsWindowController: NSWindowController {
         stack.spacing = 20
         stack.translatesAutoresizingMaskIntoConstraints = false
         document.addSubview(stack)
+        let documentWidth = document.widthAnchor.constraint(equalToConstant: scroll.contentView.bounds.width)
+        scroll.documentWidthConstraint = documentWidth
         NSLayoutConstraint.activate([
             document.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             document.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
-            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            documentWidth,
             stack.topAnchor.constraint(equalTo: document.topAnchor, constant: 20),
             stack.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 20),
             stack.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -20),
