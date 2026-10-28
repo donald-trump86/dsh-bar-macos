@@ -221,6 +221,16 @@ func capture(_ view: NSView, _ name: String) {
 func texts(_ window: NSWindow) -> [NSTextField] {
     descendants(window.contentView!).compactMap { $0 as? NSTextField }
 }
+func explanatoryTextFields(in root: NSView) -> [NSTextField] {
+    descendants(root).compactMap { $0 as? NSTextField }.filter { label in
+        var ancestor = label.superview
+        while let view = ancestor {
+            if view is NSButton { return false }
+            ancestor = view.superview
+        }
+        return true
+    }
+}
 func buttons(_ window: NSWindow) -> [NSButton] {
     descendants(window.contentView!).compactMap { $0 as? NSButton }
 }
@@ -245,6 +255,31 @@ func expectVisibleText(_ window: NSWindow, _ value: String, _ message: String) {
     let clip = descendants(window.contentView!).compactMap { $0 as? NSScrollView }.first!.contentView
     let rect = label.convert(label.bounds, to: clip)
     expect(clip.bounds.contains(rect), message + ": label=\(rect), clip=\(clip.bounds), \(viewContext(label))")
+}
+
+do {
+    let root = NSView()
+    let explanation = NSTextField(labelWithString: "Expected guide explanation")
+    let button = NSButton(title: "Open System Settings", target: nil, action: nil)
+    let buttonContent = NSView()
+    let buttonText = NSTextField(labelWithString: button.title)
+    root.addSubview(explanation)
+    root.addSubview(button)
+    button.addSubview(buttonContent)
+    buttonContent.addSubview(buttonText)
+    expect(button.window == nil && !buttonText.isHiddenOrHasHiddenAncestor, "regression button remains offscreen with visible text")
+    let expected = Set([explanation.stringValue])
+    let unfiltered = Set(descendants(root).compactMap { $0 as? NSTextField }
+        .filter { !$0.isHiddenOrHasHiddenAncestor }.map(\.stringValue))
+    expect(unfiltered.subtracting(expected) == Set([button.title]), "unfiltered text walk reproduces unexpected button title")
+    let classified = Set(explanatoryTextFields(in: root).filter { !$0.isHiddenOrHasHiddenAncestor }.map(\.stringValue))
+    expect(classified == expected, "button-owned descendants are actions rather than explanations")
+    let unknown = NSTextField(labelWithString: "Unexpected verified access")
+    root.addSubview(unknown)
+    expect(!unknown.isHiddenOrHasHiddenAncestor, "unknown explanatory sibling remains visible")
+    let unexpected = Set(explanatoryTextFields(in: root).filter { !$0.isHiddenOrHasHiddenAncestor }.map(\.stringValue)).subtracting(expected)
+    expect(unexpected == Set([unknown.stringValue]), "unknown visible explanatory status remains detected")
+    print("PASS test_text_ownership: unfilteredUnexpected=\(unfiltered.subtracting(expected).sorted()), classifiedUnexpected=\(classified.subtracting(expected).sorted()), withUnknownSibling=\(unexpected.sorted())")
 }
 
 Localization.shared.apply(language: .english)
@@ -338,7 +373,7 @@ for (language, name, paths) in [
         let scroll = descendants(content).compactMap { $0 as? NSScrollView }.first!
         let document = scroll.documentView!
         let clip = scroll.contentView
-        let visibleTexts = texts(window).filter { !$0.isHiddenOrHasHiddenAncestor }
+        let visibleTexts = explanatoryTextFields(in: content).filter { !$0.isHiddenOrHasHiddenAncestor }
         let controls = buttons(window)
         let geometry = { "language=\(name), size=\(size), scrollerStyle=\(scroll.scrollerStyle), content.frame=\(content.frame), content.bounds=\(content.bounds), scroll.frame=\(scroll.frame), scroll.bounds=\(scroll.bounds), document.frame=\(document.frame), document.bounds=\(document.bounds), clip.frame=\(clip.frame), clip.bounds=\(clip.bounds)" }
         print("GEOMETRY permissions guide: \(geometry())")
@@ -346,6 +381,9 @@ for (language, name, paths) in [
         expect(abs(document.frame.width - clip.bounds.width) < 1, "no horizontal overflow: \(geometry())")
         expect(document.frame.height > clip.bounds.height, "long guide needs scrolling")
         expect(controls.count == 7, "complete guide controls: count=\(controls.count), controls=\(controls.map(viewContext)); \(geometry())")
+        let expectedButtonTitles = Array(repeating: L(.permissionsOpenSettings), count: 5) + [L(.permissionsRevealApp), L(.permissionsLater)]
+        expect(controls.map(\.title).sorted() == expectedButtonTitles.sorted(), "known action titles and counts: controls=\(controls.map(viewContext)); \(geometry())")
+        expect(controls.allSatisfy { !$0.isHiddenOrHasHiddenAncestor }, "all guide actions remain visible: controls=\(controls.map(viewContext)); \(geometry())")
         let explanatoryTexts = [L(.permissionsTitle), L(.permissionsIntro), L(.permissionsNote)]
             + PermissionSettingsTarget.allCases.flatMap { [$0.title, $0.explanation, $0.manualPath] }
         let missingTexts = Set(explanatoryTexts).subtracting(Set(visibleTexts.map(\.stringValue))).sorted()
