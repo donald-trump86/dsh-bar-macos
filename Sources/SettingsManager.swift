@@ -80,6 +80,12 @@ final class SettingsManager {
         }
     }
 
+    // MARK: - Permissions Guide
+    var permissionsGuideVersion: Int {
+        get { UserDefaults.standard.integer(forKey: "DSH_PermissionsGuideVersion") }
+        set { UserDefaults.standard.set(newValue, forKey: "DSH_PermissionsGuideVersion") }
+    }
+
     // MARK: - Service Recovery
     /// Whether DSH Bar should bring back a service it started after an
     /// unexpected exit. Defaults to on: silently losing the console is worse

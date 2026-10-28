@@ -218,6 +218,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     private let autoRestartCheckbox = NSSwitch()
     private let notificationInfoLabel = NSTextField(labelWithString: L(.notifNotChecked))
     private let notificationActionButton = NSButton()
+    private let permissionsGuideButton = NSButton()
     private let languagePopup = NSPopUpButton()
     private var languageObserverToken: UUID?
     /// Guards against rebuilding the panel twice for one effective language.
@@ -582,6 +583,8 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         languagePopup.setAccessibilityLabel(L(.language))
         languagePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 128).isActive = true
 
+        configureActionButton(permissionsGuideButton, title: L(.permissionsOpenGuide), action: #selector(didClickPermissionsGuide))
+
         notificationInfoLabel.font = .systemFont(ofSize: 12)
         notificationInfoLabel.textColor = .secondaryLabelColor
         configureActionButton(notificationActionButton, title: L(.notifActionSettings), action: #selector(didClickNotificationAction))
@@ -645,6 +648,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             settingsRow(text: makeTextStack(title: L(.launchAtLogin), description: L(.launchAtLoginDesc)), control: launchAtLoginCheckbox),
             settingsRow(text: makeTextStack(title: L(.globalShortcut), description: L(.globalShortcutDesc)), control: hotKeyControls),
             settingsRow(text: notificationText, control: notificationActionButton),
+            settingsRow(text: makeTextStack(title: L(.permissionsAccess), description: L(.permissionsAccessDesc)), control: permissionsGuideButton),
             settingsRow(text: makeTextStack(title: L(.language), description: L(.languageDesc)), control: languagePopup)
         ])
         let groups = NSStackView(views: [service, versions, general])
@@ -1640,6 +1644,10 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     @objc private func didToggleAutoUpdates() {
         UpdateManager.shared.automaticallyChecksForUpdates =
             (autoUpdateCheckbox.state == .on)
+    }
+
+    @objc private func didClickPermissionsGuide() {
+        PermissionsWindowController.shared.showGuide()
     }
 
     @objc private func didClickNotificationAction() {

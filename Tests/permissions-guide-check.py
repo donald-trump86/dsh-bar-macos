@@ -2,11 +2,143 @@
 """Compile production permissions behavior with inert AppKit fixture dependencies."""
 import importlib.util
 from pathlib import Path
+import re
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("dashboard_fixture", ROOT / "Tests/dashboard-ui-fixture.py")
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
+
+
+def settings_version_fixture():
+    settings = (ROOT / "Sources/SettingsManager.swift").read_text()
+    version = fixture.extract(settings, r"^    var permissionsGuideVersion: Int \{\n.*?^    \}")
+    assert version.count("UserDefaults.standard") == 2, "version property defaults boundary changed"
+    version = version.replace("UserDefaults.standard", "GuideDefaults.store")
+    return "import Cocoa\nenum GuideDefaults { static var store: UserDefaults! }\nextension SettingsManager {\n" + version + "\n}\n"
+
+
+def test_first_display_version_and_termination():
+    delegate = (ROOT / "Sources/AppDelegate.swift").read_text()
+    quitting = fixture.extract(delegate, r"^    private var terminationReplyPending[^\n]+")
+    method = fixture.extract(delegate, r"^    private func showPermissionsGuideIfNeeded\(\) \{\n.*?^    \}")
+    boundary = "PermissionsWindowController.shared.showGuide()"
+    assert method.count(boundary) == 1, "first-display presentation boundary changed"
+    method = method.replace(boundary, "FirstDisplayGuide.shared.showGuide()")
+    harness = settings_version_fixture() + r'''
+@MainActor
+final class AppDelegate {
+''' + quitting.replace("private ", "") + "\n" + method.replace("private ", "") + r'''
+}
+final class FirstDisplayGuide {
+    static let shared = FirstDisplayGuide()
+    var versionsAtShow: [Int] = []
+    func showGuide() {
+        expect(Thread.isMainThread, "presentation runs on main thread")
+        versionsAtShow.append(SettingsManager.shared.permissionsGuideVersion)
+    }
+}
+'''
+    fixture.compile_run(r'''
+MainActor.assumeIsolated {
+expect(Thread.isMainThread, "first-display check runs on main thread")
+let cases: [(stored: Int, quitting: Bool, shows: Int, saved: Int)] = [
+    (0, false, 1, 1),
+    (1, false, 0, 1),
+    (2, false, 0, 2),
+    (0, true, 0, 0)
+]
+for item in cases {
+    let suite = "dsh-permissions-first-display-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    GuideDefaults.store = defaults
+    expect(defaults.object(forKey: "DSH_PermissionsGuideVersion") == nil, "unique empty defaults suite")
+    expect(SettingsManager.shared.permissionsGuideVersion == 0, "unset version defaults to zero")
+    if item.stored != 0 { defaults.set(item.stored, forKey: "DSH_PermissionsGuideVersion") }
+    FirstDisplayGuide.shared.versionsAtShow = []
+    let delegate = AppDelegate()
+    delegate.terminationReplyPending = item.quitting
+    delegate.showPermissionsGuideIfNeeded()
+    expect(FirstDisplayGuide.shared.versionsAtShow.count == item.shows, "show count: \(item)")
+    expect(SettingsManager.shared.permissionsGuideVersion == item.saved, "final version: \(item)")
+    expect(UserDefaults(suiteName: suite)!.integer(forKey: "DSH_PermissionsGuideVersion") == item.saved, "persisted exact key: \(item)")
+    if item.shows == 1 {
+        expect(FirstDisplayGuide.shared.versionsAtShow == [item.stored], "display before saving version")
+        delegate.showPermissionsGuideIfNeeded()
+        expect(FirstDisplayGuide.shared.versionsAtShow.count == 1, "initial case repeated still shows once")
+        expect(SettingsManager.shared.permissionsGuideVersion == 1, "repeat preserves saved version")
+    }
+    print("PASS test_first_display_version_and_termination: \(item)")
+}
+}
+''', dashboard=harness)
+    startup = fixture.extract(delegate, r"^    func applicationDidFinishLaunching\(_ notification: Notification\) \{\n.*?^    \}")
+    assert startup.count("showPermissionsGuideIfNeeded()") == 1, "startup schedules one first-display check"
+    assert re.search(r"ServiceManager\.shared\.startMonitoring\(\)\s+DispatchQueue\.main\.async \{ \[weak self\] in\s+self\?\.showPermissionsGuideIfNeeded\(\)\s+\}\s+\}$", startup), "first-display check must be asynchronous after existing initialization"
+    print("PASS test_first_display_startup_hook: one main-queue startup-tail call; app entry point excluded")
+
+
+def test_manual_settings_entry():
+    dashboard = (ROOT / "Sources/DashboardWindow.swift").read_text().replace("private ", "")
+    fixture.compile_run(r'''
+_ = NSApplication.shared
+func descendants(_ view: NSView) -> [NSView] {
+    [view] + view.subviews.flatMap { descendants($0) }
+}
+for stored in [0, 1, 2] {
+    let suite = "dsh-permissions-manual-entry-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    GuideDefaults.store = defaults
+    expect(defaults.object(forKey: "DSH_PermissionsGuideVersion") == nil, "unique empty manual-entry suite")
+    if stored != 0 { defaults.set(stored, forKey: "DSH_PermissionsGuideVersion") }
+    let rawBefore = defaults.object(forKey: "DSH_PermissionsGuideVersion") as? Int
+    SettingsManager.shared.language = .english
+    Localization.shared.apply(language: .english)
+    let panel = DashboardWindowController()
+    panel.window!.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+    func unchanged(_ stage: String) {
+        expect(SettingsManager.shared.permissionsGuideVersion == stored, "manual version at \(stage), stored=\(stored)")
+        expect(defaults.object(forKey: "DSH_PermissionsGuideVersion") as? Int == rawBefore, "manual entry never writes version at \(stage)")
+        let service = ServiceManager.shared
+        expect(service.startCalls == 0 && service.stopCalls == 0 && service.restartCalls == 0, "zero service lifecycle calls at \(stage)")
+        expect(DshVersionController.shared.installCalls == 0 && DshInstallAssistant.presentCalls == 0, "zero install calls at \(stage)")
+        expect(PermissionsFixture.openedURLs.isEmpty && PermissionsFixture.revealedURLs.isEmpty, "zero Settings/Finder calls at \(stage)")
+        expect(!panel.window!.isVisible, "dashboard fixture stays offscreen at \(stage)")
+    }
+    expect(panel.permissionsGuideButton.title == "Open Guide", "English settings button")
+    expect(panel.permissionsGuideButton.target as? DashboardWindowController === panel, "real dashboard button target")
+    expect(panel.permissionsGuideButton.action == #selector(DashboardWindowController.didClickPermissionsGuide), "real dashboard button action")
+    let before = PermissionsFixture.shownWindows.count
+    panel.permissionsGuideButton.performClick(nil)
+    let guide = PermissionsWindowController.shared
+    let window = guide.window!
+    window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+    expect(PermissionsFixture.shownWindows.count == before + 1, "button opens guide")
+    expect(window.title == "Permissions & Access", "English guide title")
+    unchanged("first manual open")
+    window.performClose(nil)
+    panel.permissionsGuideButton.performClick(nil)
+    expect(guide.window === window && PermissionsFixture.shownWindows.count == before + 2, "button reopens same guide after close")
+    unchanged("reopening")
+    window.performClose(nil)
+    SettingsManager.shared.language = .chinese
+    Localization.shared.apply(language: .chinese)
+    pump(0.15)
+    expect(panel.permissionsGuideButton.title == "打开引导", "rebuilt Chinese settings button")
+    let dashboardTexts = descendants(panel.window!.contentView!).compactMap { $0 as? NSTextField }.map(\.stringValue)
+    expect(dashboardTexts.contains("权限与访问") && dashboardTexts.contains(L(.permissionsAccessDesc)), "rebuilt Chinese settings row")
+    panel.permissionsGuideButton.performClick(nil)
+    expect(guide.window === window && PermissionsFixture.shownWindows.count == before + 3, "same guide after language change")
+    expect(window.title == "权限与访问", "reopened guide uses Chinese title")
+    expect(descendants(window.contentView!).compactMap { $0 as? NSTextField }.contains { $0.stringValue == L(.permissionsIntro) }, "reopened guide uses Chinese copy")
+    unchanged("language change and reopen")
+    window.performClose(nil)
+    panel.window!.performClose(nil)
+    print("PASS test_manual_settings_entry: stored=\(stored), real button, shared reopen, language rebuild, unchanged version, zero lifecycle/install/Settings/Finder calls")
+}
+''', dashboard=dashboard + settings_version_fixture())
 
 
 def test_settings_links_and_fallback():
@@ -231,5 +363,7 @@ print("PASS test_language_observer_lifetime: controller releases and later langu
 
 
 if __name__ == "__main__":
+    test_first_display_version_and_termination()
+    test_manual_settings_entry()
     test_settings_links_and_fallback()
     test_native_guide()

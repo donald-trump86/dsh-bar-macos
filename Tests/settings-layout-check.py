@@ -84,7 +84,7 @@ func geometry(_ name: String, active: Bool) {
         ("channel popup", panel.tagPopup), ("install", panel.tagInstallButton),
         ("update check", panel.updateCheckButton), ("auto update", panel.autoUpdateCheckbox),
         ("recovery", panel.autoRestartCheckbox), ("notification action", panel.notificationActionButton),
-        ("language", panel.languagePopup)
+        ("permissions guide", panel.permissionsGuideButton), ("language", panel.languagePopup)
     ] + (active ? [("cancel", panel.tagCancelButton), ("progress", panel.tagInstallProgress),
                    ("metrics", panel.tagInstallMetricsLabel), ("log disclosure", panel.tagDetailsButton),
                    ("log", panel.tagLogScroll)] : [])
@@ -111,15 +111,20 @@ func geometry(_ name: String, active: Bool) {
     }
     for key: Localization.Key in [.settingsService, .settingsVersions, .settingsGeneral,
                                   .serverPort, .automaticRecovery, .dshCommandLine, .installChannel,
-                                  .barUpdates, .launchAtLogin, .globalShortcut, .notifications, .language] {
+                                  .barUpdates, .launchAtLogin, .globalShortcut, .notifications,
+                                  .permissionsAccess, .permissionsAccessDesc, .language] {
         expect(labels.contains { $0.stringValue == L(key) }, "missing grouped setting title \(key): \(name)")
     }
     // Settings rows must keep their control column separate from wrapping text.
-    for label in labels where label.stringValue == L(.globalShortcut) || label.stringValue == L(.language) {
-        let button = label.stringValue == L(.globalShortcut) ? panel.hotKeyButton as NSView : panel.languagePopup as NSView
+    let rowControls: [(Localization.Key, NSView)] = [
+        (.globalShortcut, panel.hotKeyButton), (.permissionsAccess, panel.permissionsGuideButton),
+        (.language, panel.languagePopup)
+    ]
+    for (key, button) in rowControls {
+        let label = labels.first { $0.stringValue == L(key) }!
         let titleRect = label.convert(label.bounds, to: doc)
         let buttonRect = button.convert(button.bounds, to: doc)
-        expect(titleRect.maxX + 8 <= buttonRect.minX, "setting title overlaps control: \(name)")
+        expect(titleRect.maxX + 8 <= buttonRect.minX, "setting title overlaps control: \(key), \(name)")
     }
     let groups = descendants(doc).compactMap { $0 as? NSTextField }.filter {
         [L(.settingsService), L(.settingsVersions), L(.settingsGeneral)].contains($0.stringValue)

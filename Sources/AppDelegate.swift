@@ -77,6 +77,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Start quietly. The Web console only opens from Open Web or its global
         // shortcut, never from app launch, Start Service, or Restart Service.
         ServiceManager.shared.startMonitoring()
+
+        DispatchQueue.main.async { [weak self] in
+            self?.showPermissionsGuideIfNeeded()
+        }
+    }
+
+    private func showPermissionsGuideIfNeeded() {
+        guard !terminationReplyPending,
+              SettingsManager.shared.permissionsGuideVersion < PermissionsWindowController.guideVersion else { return }
+        PermissionsWindowController.shared.showGuide()
+        SettingsManager.shared.permissionsGuideVersion = PermissionsWindowController.guideVersion
     }
 
     /// Quit keeps the service running by default (that is what the menu bar

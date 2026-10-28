@@ -73,6 +73,7 @@ final class Localization {
         case serverPort, defaultPortLabel, globalShortcut, globalShortcutDesc
         case launchAtLogin, launchAtLoginDesc, automaticRecovery, automaticRecoveryDesc
         case notifications, notificationsDesc, dshCommandLine
+        case permissionsAccess, permissionsAccessDesc, permissionsOpenGuide
         case language, languageDesc, languageAutomatic
         case searchingPath, detectingDsh, installedAt, notFoundInstallNpm
 
@@ -302,6 +303,9 @@ final class Localization {
         .automaticRecoveryDesc: "Restart a service DSH Bar started if it exits unexpectedly",
         .notifications: "Notifications",
         .notificationsDesc: "Used to tell you when the service dies",
+        .permissionsAccess: "Permissions & Access",
+        .permissionsAccessDesc: "Review macOS privacy access and setup steps",
+        .permissionsOpenGuide: "Open Guide",
         .dshCommandLine: "DSH Command Line",
         .language: "Language",
         .languageDesc: "Applies immediately, no restart needed",
@@ -577,6 +581,9 @@ final class Localization {
         .automaticRecoveryDesc: "DSH Bar 启动的服务意外退出时自动重启",
         .notifications: "通知",
         .notificationsDesc: "用于在服务异常退出时提醒你",
+        .permissionsAccess: "权限与访问",
+        .permissionsAccessDesc: "查看 macOS 隐私访问说明与设置步骤",
+        .permissionsOpenGuide: "打开引导",
         .dshCommandLine: "DSH 命令行",
         .language: "语言",
         .languageDesc: "立即生效，无需重启",

@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,13 +39,14 @@ final class DshVersionController {
     var lastInstallLog = ""
     var isInstalling: Bool { installActivity != nil }
     var cancelCalls = 0
+    var installCalls = 0
     func cancelInstall() { cancelCalls += 1; installActivity?.phase = .cancelling }
     static func validTag(_ tag: String) -> Bool { true }
     static func installCommand(forTag tag: String) -> String? { "inert fixture" }
     func fetchTags(completion: @escaping (Result<[String: String], ProbeFailure>) -> Void) {
         completion(.success(["latest": "1.0.0", "next": "2.0.0"]))
     }
-    func install(tag: String, completion: @escaping (Result<String, Error>) -> Void) {}
+    func install(tag: String, completion: @escaping (Result<String, Error>) -> Void) { installCalls += 1 }
 }
 enum ServicePhase {
     case running, checking, starting, stopping, restarting, portConflict, error, stopped
@@ -69,14 +71,17 @@ final class ServiceManager {
     var autoRestartEnabled = true
     var isRunning: Bool { snapshot.isRunning }
     var hasUnmanagedService = false
+    var startCalls = 0
+    var stopCalls = 0
+    var restartCalls = 0
     func addStatusObserver(_ callback: @escaping (ServiceSnapshot) -> Void) -> UUID { UUID() }
     func detectDshInstallation(completion: ((String?) -> Void)? = nil) { completion?(snapshot.dshPath) }
     func openBrowser() {}
-    func stopService(completion: (Bool, String?) -> Void) {}
-    func startService(completion: (Bool, String?) -> Void) {}
-    func restartService(completion: (Bool, String?) -> Void) {}
-    func stopUnmanagedService(pid: Int32, completion: (Bool, String?) -> Void) {}
-    func restartUnmanagedService(pid: Int32, completion: (Bool, String?) -> Void) {}
+    func stopService(completion: (Bool, String?) -> Void) { stopCalls += 1 }
+    func startService(completion: (Bool, String?) -> Void) { startCalls += 1 }
+    func restartService(completion: (Bool, String?) -> Void) { restartCalls += 1 }
+    func stopUnmanagedService(pid: Int32, completion: (Bool, String?) -> Void) { stopCalls += 1 }
+    func restartUnmanagedService(pid: Int32, completion: (Bool, String?) -> Void) { restartCalls += 1 }
     func copyURLToClipboard() {}
     func copyDiagnosticsToClipboard() {}
     func cancelPendingAutoRestart() {}
@@ -111,7 +116,10 @@ enum ExternalServicePrompt {
     enum Action { case stop, restart }
     static func confirm(action: Action, completion: (Bool) -> Void) {}
 }
-enum DshInstallAssistant { static func present() {} }
+enum DshInstallAssistant {
+    static var presentCalls = 0
+    static func present() { presentCalls += 1 }
+}
 final class LogWindowController {
     static let shared = LogWindowController()
     func showWindow(_ sender: Any?) {}
@@ -192,3 +200,4 @@ def compile_run(main, dashboard=None, full_dashboard=False, arguments=()):
         if "Unable to simultaneously satisfy constraints" in result.stderr:
             raise AssertionError(result.stderr)
         print(result.stdout, end="")
+        print(result.stderr, end="", file=sys.stderr)
