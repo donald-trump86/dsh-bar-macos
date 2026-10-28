@@ -224,11 +224,27 @@ func texts(_ window: NSWindow) -> [NSTextField] {
 func buttons(_ window: NSWindow) -> [NSButton] {
     descendants(window.contentView!).compactMap { $0 as? NSButton }
 }
+func viewContext(_ view: NSView) -> String {
+    func identity(_ item: NSView) -> String {
+        "type=\(type(of: item)), identifier=\(item.identifier?.rawValue ?? "nil"), hidden=\(item.isHidden)"
+    }
+    var ancestors: [String] = []
+    var ancestor = view.superview
+    while let item = ancestor {
+        ancestors.append(identity(item))
+        ancestor = item.superview
+    }
+    let text = (view as? NSTextField)?.stringValue ?? (view as? NSButton)?.title ?? ""
+    return "text=\(text.debugDescription), \(identity(view)), hiddenOrAncestor=\(view.isHiddenOrHasHiddenAncestor), frame=\(view.frame), bounds=\(view.bounds), superview=\(ancestors.first ?? "nil"), ancestors=\(ancestors)"
+}
 func expectVisibleText(_ window: NSWindow, _ value: String, _ message: String) {
-    let label = texts(window).first { $0.stringValue == value && !$0.isHiddenOrHasHiddenAncestor }!
+    guard let label = texts(window).first(where: { $0.stringValue == value && !$0.isHiddenOrHasHiddenAncestor }) else {
+        expect(false, message + ": no visible match for \(value.debugDescription); labels:\n" + texts(window).map(viewContext).joined(separator: "\n"))
+        return
+    }
     let clip = descendants(window.contentView!).compactMap { $0 as? NSScrollView }.first!.contentView
     let rect = label.convert(label.bounds, to: clip)
-    expect(clip.bounds.contains(rect), message + ": label=\(rect), clip=\(clip.bounds)")
+    expect(clip.bounds.contains(rect), message + ": label=\(rect), clip=\(clip.bounds), \(viewContext(label))")
 }
 
 Localization.shared.apply(language: .english)
@@ -329,24 +345,29 @@ for (language, name, paths) in [
         expect(scroll.hasVerticalScroller, "scrollable permissions document")
         expect(abs(document.frame.width - clip.bounds.width) < 1, "no horizontal overflow: \(geometry())")
         expect(document.frame.height > clip.bounds.height, "long guide needs scrolling")
-        expect(controls.count == 7, "complete guide controls")
+        expect(controls.count == 7, "complete guide controls: count=\(controls.count), controls=\(controls.map(viewContext)); \(geometry())")
         let explanatoryTexts = [L(.permissionsTitle), L(.permissionsIntro), L(.permissionsNote)]
             + PermissionSettingsTarget.allCases.flatMap { [$0.title, $0.explanation, $0.manualPath] }
-        expect(Set(visibleTexts.map(\.stringValue)) == Set(explanatoryTexts), "explanations only; no verified authorization status")
-        expect(!descendants(content).contains { $0 is NSProgressIndicator }, "no permissions completion indicator")
+        let missingTexts = Set(explanatoryTexts).subtracting(Set(visibleTexts.map(\.stringValue))).sorted()
+        let unexpectedTexts = Set(visibleTexts.map(\.stringValue)).subtracting(Set(explanatoryTexts)).sorted()
+        let textDifference = "missing=\(missingTexts), unexpected=\(unexpectedTexts)"
+        let labelContext = { texts(window).map(viewContext).joined(separator: "\n") }
+        print("TEXTS permissions guide: language=\(name), size=\(size), \(textDifference)")
+        expect(Set(visibleTexts.map(\.stringValue)) == Set(explanatoryTexts), "explanations only; no verified authorization status: \(textDifference); \(geometry()); labels:\n\(labelContext())")
+        expect(!descendants(content).contains { $0 is NSProgressIndicator }, "no permissions completion indicator: \(geometry()); indicators=\(descendants(content).filter { $0 is NSProgressIndicator }.map(viewContext))")
         for target in PermissionSettingsTarget.allCases {
-            expect(visibleTexts.contains { $0.stringValue == target.title }, "permission heading: \(target.title)")
-            expect(visibleTexts.contains { $0.stringValue == target.explanation }, "permission explanation: \(target.title)")
-            expect(visibleTexts.contains { $0.stringValue == target.manualPath }, "manual path: \(target.title)")
+            expect(visibleTexts.contains { $0.stringValue == target.title }, "permission heading: \(target.title); labels:\n\(labelContext())")
+            expect(visibleTexts.contains { $0.stringValue == target.explanation }, "permission explanation: \(target.title); labels:\n\(labelContext())")
+            expect(visibleTexts.contains { $0.stringValue == target.manualPath }, "manual path: \(target.title); labels:\n\(labelContext())")
         }
         for view in descendants(document) where !view.isHiddenOrHasHiddenAncestor && (view is NSTextField || view is NSButton) {
             let rect = view.convert(view.bounds, to: document)
-            expect(rect.width > 0 && rect.height > 0 && rect.minX >= -1 && rect.maxX <= document.bounds.width + 1 && rect.minY >= -1 && rect.maxY <= document.bounds.height + 1, "control stays inside document: \(view)")
+            expect(rect.width > 0 && rect.height > 0 && rect.minX >= -1 && rect.maxX <= document.bounds.width + 1 && rect.minY >= -1 && rect.maxY <= document.bounds.height + 1, "control stays inside document: rect=\(rect), \(viewContext(view)); \(geometry())")
             if let label = view as? NSTextField, let font = label.font {
                 let required = (label.stringValue as NSString).boundingRect(
                     with: NSSize(width: max(1, label.bounds.width - 4), height: 10000),
                     options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font]).height
-                expect(label.bounds.height + 2 >= ceil(required), "wrapped label is not clipped: \(label.stringValue)")
+                expect(label.bounds.height + 2 >= ceil(required), "wrapped label is not clipped: requiredHeight=\(ceil(required)), font=\(font.fontName), fontSize=\(font.pointSize), \(viewContext(label)); \(geometry())")
             }
         }
         for value in [network.title, network.explanation, network.manualPath] {
@@ -358,19 +379,19 @@ for (language, name, paths) in [
         let networkButton = controls.first { $0.title == L(.permissionsOpenSettings) && $0.tag == 4 }!
         networkButton.scrollToVisible(networkButton.bounds)
         scroll.reflectScrolledClipView(clip)
-        expect(clip.bounds.contains(networkButton.convert(networkButton.bounds, to: clip)), "Local Network settings button reachable by scrolling")
+        expect(clip.bounds.contains(networkButton.convert(networkButton.bounds, to: clip)), "Local Network settings button reachable by scrolling: rect=\(networkButton.convert(networkButton.bounds, to: clip)), \(viewContext(networkButton)); \(geometry())")
         let later = controls.first { $0.title == L(.permissionsLater) }!
-        expect(content.bounds.contains(later.convert(later.bounds, to: content)), "Set Up Later stays visible")
+        expect(content.bounds.contains(later.convert(later.bounds, to: content)), "Set Up Later stays visible: rect=\(later.convert(later.bounds, to: content)), \(viewContext(later)); \(geometry())")
         let stem = "\(name)-\(Int(size.width))x\(Int(size.height))"
         let first = visibleTexts.first { $0.stringValue == L(.permissionsTitle) }!
         first.scrollToVisible(first.bounds)
         scroll.reflectScrolledClipView(clip)
-        expect(first.convert(first.bounds, to: clip).intersects(clip.bounds), "top of guide reachable by scrolling")
+        expect(first.convert(first.bounds, to: clip).intersects(clip.bounds), "top of guide reachable by scrolling: rect=\(first.convert(first.bounds, to: clip)), \(viewContext(first)); \(geometry())")
         capture(content, stem + "-top")
         let last = visibleTexts.first { $0.stringValue == L(.permissionsNote) }!
         last.scrollToVisible(last.bounds)
         scroll.reflectScrolledClipView(clip)
-        expect(last.convert(last.bounds, to: clip).intersects(clip.bounds), "end of guide reachable by scrolling: last=\(last.convert(last.bounds, to: clip)), clip=\(clip.bounds), document=\(document.frame)")
+        expect(last.convert(last.bounds, to: clip).intersects(clip.bounds), "end of guide reachable by scrolling: last=\(last.convert(last.bounds, to: clip)), \(viewContext(last)); \(geometry())")
         capture(content, stem + "-bottom")
         capture(document, stem + "-document")
         print("PASS test_native_layout: \(stem), all controls present, wrapped text fits, scroll end reachable; 3 PNGs")
