@@ -324,8 +324,10 @@ for (language, name, paths) in [
         let clip = scroll.contentView
         let visibleTexts = texts(window).filter { !$0.isHiddenOrHasHiddenAncestor }
         let controls = buttons(window)
+        let geometry = "language=\(name), size=\(size), scrollerStyle=\(scroll.scrollerStyle), content.frame=\(content.frame), scroll.frame=\(scroll.frame), document.frame=\(document.frame), document.bounds=\(document.bounds), clip.frame=\(clip.frame), clip.bounds=\(clip.bounds)"
+        print("GEOMETRY permissions guide: \(geometry)")
         expect(scroll.hasVerticalScroller, "scrollable permissions document")
-        expect(abs(document.frame.width - clip.bounds.width) < 1, "no horizontal overflow")
+        expect(abs(document.frame.width - clip.bounds.width) < 1, "no horizontal overflow: \(geometry)")
         expect(document.frame.height > clip.bounds.height, "long guide needs scrolling")
         expect(controls.count == 7, "complete guide controls")
         let explanatoryTexts = [L(.permissionsTitle), L(.permissionsIntro), L(.permissionsNote)]
