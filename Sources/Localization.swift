@@ -140,6 +140,14 @@ final class Localization {
         // External service confirmation
         case extTitle, extStopButton, extStopExplain, extRestartExplain, extProcessLabel
 
+        // Permissions guide
+        case permissionsTitle, permissionsIntro, permissionsNote
+        case permissionsFullDisk, permissionsFullDiskBody
+        case permissionsAutomation, permissionsAutomationBody
+        case permissionsPhotos, permissionsPhotosBody, permissionsPhotosPane
+        case permissionsMedia, permissionsMediaBody, permissionsManualPath
+        case permissionsOpenSettings, permissionsRevealApp, permissionsLater, permissionsOpenFailed
+
         // Durations
         case durationDaysHours, durationHoursMinutes
     }
@@ -456,6 +464,25 @@ final class Localization {
         .extRestartExplain: "DSH Bar will stop that process and start the service itself, so Stop and Restart work normally from now on.",
         .extProcessLabel: "Process: {command}",
 
+        // Permissions guide
+        .permissionsTitle: "Permissions & Access",
+        .permissionsIntro: "Set permissions as needed. Access is usually granted to the program making the request; starting DSH from different places may show different program names in macOS.",
+        .permissionsNote: "This guide does not request or verify access. Granting access to DSH Bar does not automatically grant it to every managed process, terminal session or other app. Opening Settings or closing this guide does not mean access has been granted.",
+        .permissionsFullDisk: "Full Disk Access",
+        .permissionsFullDiskBody: "For reading file locations protected by macOS. Add DSH Bar, Terminal or the actual running program according to the name macOS shows. Reveal This App locates the current app only; it may not be the program making every request.",
+        .permissionsAutomation: "Automation",
+        .permissionsAutomationBody: "For controlling other apps through Apple Events / AppleScript. Access is recorded separately for each requesting program → controlled app pair, usually after the first corresponding action. Enable the target app shown by macOS.",
+        .permissionsPhotos: "Photos",
+        .permissionsPhotosBody: "PhotoKit access to the photo library has its own authorization. Full Disk Access does not prove that the photos API has been authorized.",
+        .permissionsPhotosPane: "Photos",
+        .permissionsMedia: "Media & Apple Music",
+        .permissionsMediaBody: "Media library APIs may need separate authorization. Controlling the Music app may also use Automation. If your macOS version has no matching page, look in Privacy & Security using the path below.",
+        .permissionsManualPath: "System Settings → Privacy & Security → {pane}",
+        .permissionsOpenSettings: "Open System Settings",
+        .permissionsRevealApp: "Reveal This App in Finder",
+        .permissionsLater: "Set Up Later",
+        .permissionsOpenFailed: "Could not open System Settings. Follow the manual path shown for the permission you need.",
+
         // Durations
         .durationDaysHours: "{days}d {hours}h",
         .durationHoursMinutes: "{hours}h {minutes}m"
@@ -711,6 +738,25 @@ final class Localization {
         .extStopExplain: "DSH Bar 没有启动它，结束它会终止该进程。你的终端会显示服务已停止。",
         .extRestartExplain: "DSH Bar 会结束该进程并由自己重新启动服务，此后停止与重启都会正常工作。",
         .extProcessLabel: "进程：{command}",
+
+        // Permissions guide
+        .permissionsTitle: "权限与访问",
+        .permissionsIntro: "按需要设置权限。授权通常授予实际发起请求的程序；从不同位置启动 DSH，系统显示的程序名称可能不同。",
+        .permissionsNote: "本指南不会请求或验证权限。为 DSH Bar 授权不会自动覆盖所有被管理进程、终端会话或其他应用。打开设置或关闭本指南均不表示已授权。",
+        .permissionsFullDisk: "完全磁盘访问",
+        .permissionsFullDiskBody: "用于读取受 macOS 保护的文件位置。请根据系统显示的程序名称，添加 DSH Bar、终端或实际运行程序。“在 Finder 中显示本应用”只定位当前应用，不表示它会发起所有请求。",
+        .permissionsAutomation: "自动化",
+        .permissionsAutomationBody: "用于通过 Apple Events / AppleScript 控制其他应用。系统按“发起程序 → 被控应用”分别记录授权，通常在首次执行对应操作时出现。请为系统显示的目标应用授权。",
+        .permissionsPhotos: "相册",
+        .permissionsPhotosBody: "通过 PhotoKit 访问照片库需要独立授权。完全磁盘访问不等于照片 API 已获授权。",
+        .permissionsPhotosPane: "照片",
+        .permissionsMedia: "媒体与 Apple Music",
+        .permissionsMediaBody: "媒体资料库 API 可能需要独立授权；控制 Music 应用还可能涉及自动化。如果当前 macOS 没有对应页面，请按下方路径在“隐私与安全性”中查找。",
+        .permissionsManualPath: "系统设置 → 隐私与安全性 → {pane}",
+        .permissionsOpenSettings: "打开系统设置",
+        .permissionsRevealApp: "在 Finder 中显示本应用",
+        .permissionsLater: "稍后设置",
+        .permissionsOpenFailed: "无法打开系统设置。请按所需权限下方的手动路径查找。",
 
         // Durations
         .durationDaysHours: "{days} 天 {hours} 小时",

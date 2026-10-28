@@ -42,6 +42,7 @@ SOURCE_FILES=(
     Sources/HotKeyManager.swift
     Sources/SettingsManager.swift
     Sources/DashboardWindow.swift
+    Sources/PermissionsWindow.swift
     Sources/LogWindow.swift
     Sources/LogTextBuffer.swift
     Sources/DshInstallAssistant.swift

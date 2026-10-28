@@ -191,4 +191,11 @@ else
     fail "signing check failed — run bash $SCRIPT_DIR/signing-check.sh to see why"
 fi
 
+# 18. Exercise the standalone native permissions guide with inert OS links.
+if python3 "$SCRIPT_DIR/permissions-guide-check.py"; then
+    pass "permissions guide links, localization, reuse and scroll layout"
+else
+    fail "permissions guide check failed — run python3 $SCRIPT_DIR/permissions-guide-check.py to see why"
+fi
+
 exit $FAILED

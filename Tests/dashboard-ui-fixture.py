@@ -116,6 +116,22 @@ final class LogWindowController {
     static let shared = LogWindowController()
     func showWindow(_ sender: Any?) {}
 }
+enum PermissionsFixture {
+    static var openResults: [Bool] = []
+    static var openedURLs: [URL] = []
+    static var revealedURLs: [URL] = []
+    static var shownWindows: [ObjectIdentifier] = []
+    static var activationCalls = 0
+    static func open(_ url: URL) -> Bool {
+        openedURLs.append(url)
+        return openResults.isEmpty ? false : openResults.removeFirst()
+    }
+    static func reveal(_ urls: [URL]) { revealedURLs += urls }
+    static func show(_ window: NSWindow?) {
+        if let window = window { shownWindows.append(ObjectIdentifier(window)) }
+    }
+    static func activate() { activationCalls += 1 }
+}
 func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
     if !condition() {
         FileHandle.standardError.write(Data(("FAIL: " + message + "\n").utf8))
@@ -138,6 +154,20 @@ def compile_run(main, dashboard=None, full_dashboard=False, arguments=()):
     declarations = controller[:controller.index("final class DshVersionController {")]
     if full_dashboard:
         dashboard = source.replace("private ", "")
+    permissions = (ROOT / "Sources/PermissionsWindow.swift").read_text()
+    # Keep production layout/actions intact; never open Settings/Finder or activate
+    # the host app from an offscreen test window.
+    replacements = {
+        "NSWorkspace.shared.open($0)": "PermissionsFixture.open($0)",
+        "NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])":
+            "PermissionsFixture.reveal([Bundle.main.bundleURL])",
+        "window?.makeKeyAndOrderFront(nil)": "PermissionsFixture.show(window)",
+        "NSApplication.shared.activate(ignoringOtherApps: true)": "PermissionsFixture.activate()",
+    }
+    for boundary, inert in replacements.items():
+        if permissions.count(boundary) != 1:
+            raise AssertionError(f"permissions side-effect boundary changed: {boundary}")
+        permissions = permissions.replace(boundary, inert)
     with tempfile.TemporaryDirectory(prefix="dsh-dashboard-ui-") as directory:
         work = Path(directory)
         cache = work / "module-cache"
@@ -145,6 +175,7 @@ def compile_run(main, dashboard=None, full_dashboard=False, arguments=()):
         (work / "Dashboard.swift").write_text(dashboard)
         (work / "Declarations.swift").write_text(declarations)
         (work / "Localization.swift").write_text((ROOT / "Sources/Localization.swift").read_text())
+        (work / "Permissions.swift").write_text(permissions)
         (work / "Fixture.swift").write_text(STUBS)
         (work / "main.swift").write_text("import Cocoa\n" + main)
         env = dict(os.environ, CLANG_MODULE_CACHE_PATH=str(cache),
