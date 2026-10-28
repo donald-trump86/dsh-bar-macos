@@ -147,9 +147,11 @@ let targets: [(PermissionSettingsTarget, String)] = [
     (.fullDiskAccess, "Privacy_AllFiles"),
     (.automation, "Privacy_Automation"),
     (.photos, "Privacy_Photos"),
-    (.mediaLibrary, "Privacy_Media")
+    (.mediaLibrary, "Privacy_Media"),
+    (.localNetwork, "Privacy_LocalNetwork")
 ]
-expect(PermissionSettingsTarget.allCases.count == targets.count, "four settings targets")
+expect(PermissionSettingsTarget.allCases.count == targets.count, "five settings targets")
+expect(PermissionSettingsTarget.allCases.last == .localNetwork, "Local Network is the fifth target")
 for (target, pane) in targets {
     let expected = ["x-apple.systempreferences:com.apple.preference.security?" + pane,
                     "x-apple.systempreferences:com.apple.preference.security"]
@@ -172,7 +174,7 @@ for (target, pane) in targets {
     }
     expect(!failed && attempted == expected, "both settings links fail: \(pane)")
 }
-print("PASS test_settings_links_and_fallback: four targets, direct success, homepage fallback, total failure")
+print("PASS test_settings_links_and_fallback: five targets including Privacy_LocalNetwork, direct success, homepage fallback, total failure")
 ''', dashboard="")
 
 
@@ -252,9 +254,9 @@ expect(PermissionsFixture.shownWindows == [ObjectIdentifier(window), ObjectIdent
 expect(PermissionsFixture.activationCalls == 2, "show activates via inert boundary")
 expect(PermissionsFixture.openedURLs.isEmpty && PermissionsFixture.revealedURLs.isEmpty, "show has no permissions side effects")
 
-let expectedPanes = ["Privacy_AllFiles", "Privacy_Automation", "Privacy_Photos", "Privacy_Media"]
+let expectedPanes = ["Privacy_AllFiles", "Privacy_Automation", "Privacy_Photos", "Privacy_Media", "Privacy_LocalNetwork"]
 let openButtons = buttons(window).filter { $0.title == L(.permissionsOpenSettings) }.sorted { $0.tag < $1.tag }
-expect(openButtons.count == 4, "four settings actions")
+expect(openButtons.count == 5, "five settings actions")
 for (index, button) in openButtons.enumerated() {
     PermissionsFixture.openedURLs = []
     PermissionsFixture.openResults = [true]
@@ -262,13 +264,17 @@ for (index, button) in openButtons.enumerated() {
     expect(PermissionsFixture.openedURLs.map(\.absoluteString) == ["x-apple.systempreferences:com.apple.preference.security?" + expectedPanes[index]], "production button target: \(index)")
 }
 PermissionsFixture.openedURLs = []
-PermissionsFixture.openResults = [false, true]
-openButtons[0].performClick(nil)
-expect(PermissionsFixture.openedURLs.map(\.absoluteString) == ["x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles", "x-apple.systempreferences:com.apple.preference.security"], "button uses homepage fallback")
-PermissionsFixture.openResults = [false, false]
-openButtons[0].performClick(nil)
-settle(window)
-expect(texts(window).contains { $0.stringValue == L(.permissionsOpenFailed) && !$0.isHiddenOrHasHiddenAncestor }, "inline error after both URLs fail")
+for index in [4, 0] {
+    PermissionsFixture.openedURLs = []
+    PermissionsFixture.openResults = [false, true]
+    openButtons[index].performClick(nil)
+    expect(PermissionsFixture.openedURLs.map(\.absoluteString) == ["x-apple.systempreferences:com.apple.preference.security?" + expectedPanes[index], "x-apple.systempreferences:com.apple.preference.security"], "button uses homepage fallback: \(expectedPanes[index])")
+    PermissionsFixture.openResults = [false, false]
+    openButtons[index].performClick(nil)
+    settle(window)
+    expect(texts(window).contains { $0.stringValue == L(.permissionsOpenFailed) && !$0.isHiddenOrHasHiddenAncestor }, "inline error after both URLs fail: \(expectedPanes[index])")
+    expectVisibleText(window, L(.permissionsOpenFailed), "total-failure feedback visible: \(expectedPanes[index])")
+}
 capture(window.contentView!, "english-620x560-failure")
 expectVisibleText(window, L(.permissionsOpenFailed), "total-failure feedback visible after top FDA click")
 Localization.shared.apply(language: .chinese)
@@ -297,11 +303,17 @@ expect(PermissionsFixture.openedURLs.count == openCount && PermissionsFixture.re
 print("PASS test_native_actions: settings buttons, fallback/error, Finder bundle, show/close/reopen, live language")
 
 for (language, name, paths) in [
-    (AppLanguage.english, "english", ["Full Disk Access", "Automation", "Photos", "Media & Apple Music"].map { "System Settings → Privacy & Security → " + $0 }),
-    (AppLanguage.chinese, "chinese", ["完全磁盘访问", "自动化", "照片", "媒体与 Apple Music"].map { "系统设置 → 隐私与安全性 → " + $0 })
+    (AppLanguage.english, "english", ["Full Disk Access", "Automation", "Photos", "Media & Apple Music", "Local Network"].map { "System Settings → Privacy & Security → " + $0 }),
+    (AppLanguage.chinese, "chinese", ["完全磁盘访问", "自动化", "照片", "媒体与 Apple Music", "本地网络"].map { "系统设置 → 隐私与安全性 → " + $0 })
 ] {
     Localization.shared.apply(language: language)
     expect(PermissionSettingsTarget.allCases.map(\.manualPath) == paths, "localized manual paths: \(name)")
+    let network = PermissionSettingsTarget.localNetwork
+    expect(network.title == (language == .english ? "Local Network" : "本地网络"), "localized Local Network title: \(name)")
+    let requiredNetworkCopy = language == .english
+        ? ["discovering and connecting", "local network devices and services", "macOS 15", "actual requesting program listed by macOS", "does not guarantee", "Node, Terminal or other processes", "manual path", "older macOS versions"]
+        : ["发现和连接局域网设备与服务", "macOS 15 起", "系统实际列出的申请程序", "不保证", "Node、终端或其他进程", "手动路径", "旧版 macOS"]
+    expect(requiredNetworkCopy.allSatisfy { network.explanation.contains($0) }, "localized Local Network scope, version, requester and fallback guidance: \(name)")
     for size in [NSSize(width: 620, height: 560), NSSize(width: 520, height: 460)] {
         window.setContentSize(size)
         window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
@@ -315,7 +327,7 @@ for (language, name, paths) in [
         expect(scroll.hasVerticalScroller, "scrollable permissions document")
         expect(abs(document.frame.width - clip.bounds.width) < 1, "no horizontal overflow")
         expect(document.frame.height > clip.bounds.height, "long guide needs scrolling")
-        expect(controls.count == 6, "complete guide controls")
+        expect(controls.count == 7, "complete guide controls")
         let explanatoryTexts = [L(.permissionsTitle), L(.permissionsIntro), L(.permissionsNote)]
             + PermissionSettingsTarget.allCases.flatMap { [$0.title, $0.explanation, $0.manualPath] }
         expect(Set(visibleTexts.map(\.stringValue)) == Set(explanatoryTexts), "explanations only; no verified authorization status")
@@ -335,6 +347,16 @@ for (language, name, paths) in [
                 expect(label.bounds.height + 2 >= ceil(required), "wrapped label is not clipped: \(label.stringValue)")
             }
         }
+        for value in [network.title, network.explanation, network.manualPath] {
+            let label = visibleTexts.first { $0.stringValue == value }!
+            label.scrollToVisible(label.bounds)
+            scroll.reflectScrolledClipView(clip)
+            expectVisibleText(window, value, "Local Network content reachable by scrolling: \(name)")
+        }
+        let networkButton = controls.first { $0.title == L(.permissionsOpenSettings) && $0.tag == 4 }!
+        networkButton.scrollToVisible(networkButton.bounds)
+        scroll.reflectScrolledClipView(clip)
+        expect(clip.bounds.contains(networkButton.convert(networkButton.bounds, to: clip)), "Local Network settings button reachable by scrolling")
         let later = controls.first { $0.title == L(.permissionsLater) }!
         expect(content.bounds.contains(later.convert(later.bounds, to: content)), "Set Up Later stays visible")
         let stem = "\(name)-\(Int(size.width))x\(Int(size.height))"

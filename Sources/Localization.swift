@@ -147,6 +147,7 @@ final class Localization {
         case permissionsAutomation, permissionsAutomationBody
         case permissionsPhotos, permissionsPhotosBody, permissionsPhotosPane
         case permissionsMedia, permissionsMediaBody, permissionsManualPath
+        case permissionsLocalNetwork, permissionsLocalNetworkBody
         case permissionsOpenSettings, permissionsRevealApp, permissionsLater, permissionsOpenFailed
 
         // Durations
@@ -481,6 +482,8 @@ final class Localization {
         .permissionsPhotosPane: "Photos",
         .permissionsMedia: "Media & Apple Music",
         .permissionsMediaBody: "Media library APIs may need separate authorization. Controlling the Music app may also use Automation. If your macOS version has no matching page, look in Privacy & Security using the path below.",
+        .permissionsLocalNetwork: "Local Network",
+        .permissionsLocalNetworkBody: "For discovering and connecting to local network devices and services. This privacy control is available from macOS 15. Check the actual requesting program listed by macOS; granting access to DSH Bar does not guarantee access for Node, Terminal or other processes. If the link does not find the page, follow the manual path below; older macOS versions do not have this control.",
         .permissionsManualPath: "System Settings → Privacy & Security → {pane}",
         .permissionsOpenSettings: "Open System Settings",
         .permissionsRevealApp: "Reveal This App in Finder",
@@ -759,6 +762,8 @@ final class Localization {
         .permissionsPhotosPane: "照片",
         .permissionsMedia: "媒体与 Apple Music",
         .permissionsMediaBody: "媒体资料库 API 可能需要独立授权；控制 Music 应用还可能涉及自动化。如果当前 macOS 没有对应页面，请按下方路径在“隐私与安全性”中查找。",
+        .permissionsLocalNetwork: "本地网络",
+        .permissionsLocalNetworkBody: "用于发现和连接局域网设备与服务。macOS 15 起提供此隐私控制。请核对系统实际列出的申请程序；为 DSH Bar 授权不保证 Node、终端或其他进程获得权限。链接未定位时，请按下方手动路径查找；旧版 macOS 没有此控制项。",
         .permissionsManualPath: "系统设置 → 隐私与安全性 → {pane}",
         .permissionsOpenSettings: "打开系统设置",
         .permissionsRevealApp: "在 Finder 中显示本应用",

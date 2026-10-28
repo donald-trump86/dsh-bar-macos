@@ -1,7 +1,7 @@
 import Cocoa
 
 enum PermissionSettingsTarget: CaseIterable {
-    case fullDiskAccess, automation, photos, mediaLibrary
+    case fullDiskAccess, automation, photos, mediaLibrary, localNetwork
 
     var settingsURL: URL {
         let pane: String
@@ -10,6 +10,7 @@ enum PermissionSettingsTarget: CaseIterable {
         case .automation: pane = "Privacy_Automation"
         case .photos: pane = "Privacy_Photos"
         case .mediaLibrary: pane = "Privacy_Media"
+        case .localNetwork: pane = "Privacy_LocalNetwork"
         }
         return URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!
     }
@@ -20,6 +21,7 @@ enum PermissionSettingsTarget: CaseIterable {
         case .automation: return L(.permissionsAutomation)
         case .photos: return L(.permissionsPhotos)
         case .mediaLibrary: return L(.permissionsMedia)
+        case .localNetwork: return L(.permissionsLocalNetwork)
         }
     }
 
@@ -29,6 +31,7 @@ enum PermissionSettingsTarget: CaseIterable {
         case .automation: return L(.permissionsAutomationBody)
         case .photos: return L(.permissionsPhotosBody)
         case .mediaLibrary: return L(.permissionsMediaBody)
+        case .localNetwork: return L(.permissionsLocalNetworkBody)
         }
     }
 
