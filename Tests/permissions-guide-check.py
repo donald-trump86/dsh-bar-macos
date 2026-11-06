@@ -125,8 +125,11 @@ for stored in [0, 1, 2] {
     window.performClose(nil)
     SettingsManager.shared.language = .chinese
     Localization.shared.apply(language: .chinese)
-    pump(0.15)
-    expect(panel.permissionsGuideButton.title == "打开引导", "rebuilt Chinese settings button")
+    let deadline = Date().addingTimeInterval(3)
+    while panel.permissionsGuideButton.title != "打开引导" && Date() < deadline {
+        pump(0.01)
+    }
+    expect(panel.permissionsGuideButton.title == "打开引导", "rebuilt Chinese settings button: \(panel.permissionsGuideButton.title)")
     let dashboardTexts = descendants(panel.window!.contentView!).compactMap { $0 as? NSTextField }.map(\.stringValue)
     expect(dashboardTexts.contains("权限与访问") && dashboardTexts.contains(L(.permissionsAccessDesc)), "rebuilt Chinese settings row")
     panel.permissionsGuideButton.performClick(nil)

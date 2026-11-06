@@ -76,7 +76,9 @@ security unlock-keychain -p testpw "$KEYCHAIN" >/dev/null 2>&1 || MINT_OK=0
 # to restore in cleanup): on the macos-14 CI runner codesign resolves the
 # signing identity ONLY through the search list; the --keychain hint alone
 # leaves it "no identity found" there, while local macOS 27 accepts it.
-mapfile -t OLD_SEARCH_LIST < <(security list-keychain -d user 2>/dev/null | tr -d '"' | sed 's/^ *//;s/ *$//')
+while IFS= read -r search_keychain; do
+    OLD_SEARCH_LIST+=("$search_keychain")
+done < <(security list-keychain -d user 2>/dev/null | tr -d '"' | sed 's/^ *//;s/ *$//')
 security list-keychain -d user -s "$KEYCHAIN" ${OLD_SEARCH_LIST[@]+"${OLD_SEARCH_LIST[@]}"} >/dev/null 2>&1 || MINT_OK=0
 bash "$SCRIPT" --keychain "$KEYCHAIN" --keychain-password testpw \
     --p12-out "$TMP/test.p12" --password testpw --skip-trust >/dev/null 2>&1 || MINT_OK=0
