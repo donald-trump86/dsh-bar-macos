@@ -58,7 +58,7 @@ struct LogTextBuffer {
         guard text.utf8.count > maximumBufferedBytes else { return }
         let tail = Data(text.utf8).suffix(maximumBufferedBytes)
         // Keep a scalar boundary, not an arbitrary UTF-8 continuation byte.
-        let start = tail.firstIndex { $0 & 0xC0 != 0x80 } ?? tail.endIndex
+        let start: Data.Index = tail.firstIndex(where: { $0 & 0xC0 != 0x80 }) ?? tail.endIndex
         text = String(decoding: tail[start...], as: UTF8.self)
     }
 }
