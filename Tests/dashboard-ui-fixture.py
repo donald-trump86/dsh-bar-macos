@@ -61,13 +61,20 @@ struct ServiceSnapshot {
     var message: String? = nil
     var dshPath: String? = "/fixture/bin/dsh"
     var isManaged = true
+    var runningDshVersion: String? = "1.0.0"
     var isRunning: Bool { phase == .running }
+    var needsVersionRestart: Bool {
+        guard isRunning, isManaged, let dshVersion, let runningDshVersion else { return false }
+        return dshVersion != runningDshVersion
+    }
 }
 final class ServiceManager {
     static let shared = ServiceManager()
     var snapshot = ServiceSnapshot()
     var recoveryNotice: String? = nil
     var dshDetectionComplete = true
+    var environmentDiagnostics: EnvironmentDiagnostics?
+    var diagnosticsSummary = "Inert diagnostic report"
     var autoRestartEnabled = true
     var isRunning: Bool { snapshot.isRunning }
     var hasUnmanagedService = false
@@ -75,7 +82,14 @@ final class ServiceManager {
     var stopCalls = 0
     var restartCalls = 0
     func addStatusObserver(_ callback: @escaping (ServiceSnapshot) -> Void) -> UUID { UUID() }
-    func detectDshInstallation(completion: ((String?) -> Void)? = nil) { completion?(snapshot.dshPath) }
+    var detectionCalls = 0
+    var checkCalls = 0
+    func removeStatusObserver(_ token: UUID) {}
+    func checkStatus() { checkCalls += 1 }
+    func detectDshInstallation(completion: ((Bool) -> Void)? = nil) {
+        detectionCalls += 1
+        completion?(snapshot.dshPath != nil)
+    }
     func openBrowser() {}
     func stopService(completion: (Bool, String?) -> Void) { stopCalls += 1 }
     func startService(completion: (Bool, String?) -> Void) { startCalls += 1 }
@@ -176,6 +190,15 @@ def compile_run(main, dashboard=None, full_dashboard=False, arguments=()):
         if permissions.count(boundary) != 1:
             raise AssertionError(f"permissions side-effect boundary changed: {boundary}")
         permissions = permissions.replace(boundary, inert)
+    diagnostics = (ROOT / "Sources/DiagnosticsWindow.swift").read_text().replace("private ", "")
+    for boundary, inert in {
+        "        showWindow(nil)": "        PermissionsFixture.show(window)",
+        "window?.makeKeyAndOrderFront(nil)": "PermissionsFixture.show(window)",
+        "NSApp.activate(ignoringOtherApps: true)": "PermissionsFixture.activate()",
+    }.items():
+        if diagnostics.count(boundary) != 1:
+            raise AssertionError(f"diagnostics side-effect boundary changed: {boundary}")
+        diagnostics = diagnostics.replace(boundary, inert)
     with tempfile.TemporaryDirectory(prefix="dsh-dashboard-ui-") as directory:
         work = Path(directory)
         cache = work / "module-cache"
@@ -184,6 +207,9 @@ def compile_run(main, dashboard=None, full_dashboard=False, arguments=()):
         (work / "Declarations.swift").write_text(declarations)
         (work / "Localization.swift").write_text((ROOT / "Sources/Localization.swift").read_text())
         (work / "Permissions.swift").write_text(permissions)
+        (work / "Diagnostics.swift").write_text(diagnostics)
+        for name in ("EnvironmentDiagnostics.swift", "InstallProcess.swift"):
+            (work / name).write_text((ROOT / "Sources" / name).read_text())
         (work / "Fixture.swift").write_text(STUBS)
         (work / "main.swift").write_text("import Cocoa\n" + main)
         env = dict(os.environ, CLANG_MODULE_CACHE_PATH=str(cache),

@@ -198,16 +198,6 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
 
     /// Last probe result; the row re-renders from it whenever anything changes.
     private var tagProbeState: ProbeState = .idle
-    /// The channel currently on disk, resolved from the last successful probe.
-    private var installedTagName: String?
-    /// Set after a successful install, cleared when the service restarts.
-    private var pendingTagRestart = false
-    /// Whether the service was running when an install succeeded, so the
-    /// restart notice knows what the user has to do. See `clearPendingTagRestart`.
-    private var tagRestartFromRunning = false
-    /// The running state the previous `updateState` tick saw. `updateState` runs
-    /// every ~2s, so "the service restarted" has to be an edge, not a level.
-    private var lastTagServiceRunning = false
     // Software Updates row. `updateInfoLabel` is the live version line, held
     // here rather than in the stack `makeTextStack` builds for the same reason
     // `tagInfoLabel` is: the language-change rebuild in `setupUI()` recreates
@@ -796,11 +786,11 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         logsButton.translatesAutoresizingMaskIntoConstraints = false
         footer.addSubview(logsButton)
 
-        diagnosticsButton.title = L(.copyDiagnostics)
+        diagnosticsButton.title = L(.diagnosticsOpen)
         diagnosticsButton.bezelStyle = .accessoryBarAction
         diagnosticsButton.target = self
-        diagnosticsButton.action = #selector(didClickCopyDiagnostics)
-        diagnosticsButton.setAccessibilityLabel(L(.copyDiagnostics))
+        diagnosticsButton.action = #selector(didClickDiagnostics)
+        diagnosticsButton.setAccessibilityLabel(L(.diagnosticsOpen))
         diagnosticsButton.translatesAutoresizingMaskIntoConstraints = false
         footer.addSubview(diagnosticsButton)
 
@@ -911,7 +901,6 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     
     func updateState(_ snapshot: ServiceSnapshot) {
         updateCheckButton.isEnabled = UpdateManager.shared.canCheckForUpdates
-        clearPendingTagRestart(isRunning: snapshot.isRunning)
         let color: NSColor
         switch snapshot.phase {
         case .running:
@@ -948,7 +937,10 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         var details: [String] = []
         if let pid = snapshot.pid { details.append(L(.pidLabel, ["pid": "\(pid)"])) }
         if let uptime = snapshot.uptime { details.append(L(.upLabel, ["duration": Self.formatDuration(uptime)])) }
-        if let version = snapshot.dshVersion { details.append(L(.dshVersionLabel, ["version": version])) }
+        if snapshot.isRunning {
+            details.append(snapshot.runningDshVersion.map { L(.dshRunningVersion, ["version": $0]) }
+                ?? L(.dshRunningVersionUnknown))
+        }
         if let message = snapshot.message { details.append(message) }
         // An automatic restart restores the service but must not bury the fact
         // that it died: notifications may never have been delivered at all.
@@ -1014,11 +1006,16 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     /// starting or stopping, the panel opening. One apply point means the row
     /// cannot show a stale version next to a fresh popup.
     private func refreshTagRow() {
+        // Registry and local command checks can finish in either order. Keep
+        // the fetched tags, but always mark installation from the latest disk check.
+        if case .loaded(let tags, _) = tagProbeState {
+            tagProbeState = .loaded(tags: tags, installedVersion: ServiceManager.shared.snapshot.dshVersion)
+        }
         let presentation = tagRowPresentation(
             state: tagProbeState,
-            installedTag: installedTagName,
+            installedTag: tagProbeState.installedTag,
             isRunning: ServiceManager.shared.isRunning,
-            pendingRestart: pendingTagRestart,
+            pendingRestart: ServiceManager.shared.snapshot.needsVersionRestart,
             installActivity: DshVersionController.shared.installActivity,
             allowsRetry: installOutcome == .installCancelled || installOutcome == .installStopped
         )
@@ -1114,31 +1111,6 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         tagInstallTimer = nil
     }
 
-    /// Clear the "restart to use it" notice, but only on evidence.
-    ///
-    /// `updateState` runs every ~2s, so the notice cannot simply be dropped when
-    /// the service happens to be running when the tick arrives — that would wipe
-    /// it immediately after the install that set it, and the user would never
-    /// learn they had to restart. Two edges count:
-    ///
-    /// - the service went from not-running to running — that is the restart;
-    /// - the installed version changed, which means the service re-detected dsh
-    ///   and now runs the binary npm just wrote.
-    ///
-    /// An install performed while the service was already stopped needs no
-    /// restart at all, so that one clears at once: `tagRestartFromRunning`
-    /// records whether there was anything to restart in the first place.
-    private func clearPendingTagRestart(isRunning: Bool) {
-        defer { lastTagServiceRunning = isRunning }
-        guard pendingTagRestart else { return }
-
-        let restarted = isRunning && !lastTagServiceRunning
-        let versionChanged = tagProbeState.installedVersion != nil
-            && ServiceManager.shared.snapshot.dshVersion != tagProbeState.installedVersion
-        if !tagRestartFromRunning || restarted || versionChanged {
-            pendingTagRestart = false
-        }
-    }
     
     // MARK: - Actions
     @objc private func didClickOpen() {
@@ -1266,10 +1238,8 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             case .success(let tags):
                 let installed = ServiceManager.shared.snapshot.dshVersion
                 self.tagProbeState = .loaded(tags: tags, installedVersion: installed)
-                self.installedTagName = self.tagProbeState.installedTag
             case .failure(let reason):
                 self.tagProbeState = .failed(reason)
-                self.installedTagName = nil
             }
             self.refreshTagRow()
         }
@@ -1298,7 +1268,6 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         installOutcome = nil
         showsInstallDetails = false
         tagInstallButton.isEnabled = false
-        let wasRunning = ServiceManager.shared.isRunning
         DshVersionController.shared.install(tag: tag) { [weak self] result in
             guard let self, !DshVersionController.shared.isTerminating else { return }
             switch result {
@@ -1306,10 +1275,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
                 self.installOutcome = .installFinished
                 // Re-probe rather than assume: npm can exit 0 having changed
                 // nothing, and the honest answer is the one the binary reports.
-                self.pendingTagRestart = wasRunning
-                self.tagRestartFromRunning = wasRunning
-                ServiceManager.shared.detectDshInstallation()
-                self.loadTagOptions()
+                ServiceManager.shared.detectDshInstallation { [weak self] _ in self?.loadTagOptions() }
             case .failure(let error):
                 if case .cancelled = error as? DshVersionControllerError {
                     self.installOutcome = .installCancelled
@@ -1319,8 +1285,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
                     self.showAlert(title: L(.installFailedTitle), message: error.localizedDescription)
                 }
                 // Cancellation can interrupt npm after it has changed files.
-                ServiceManager.shared.detectDshInstallation()
-                self.loadTagOptions()
+                ServiceManager.shared.detectDshInstallation { [weak self] _ in self?.loadTagOptions() }
             }
             self.refreshTagRow()
         }
@@ -1353,14 +1318,8 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         }
     }
 
-    @objc private func didClickCopyDiagnostics() {
-        ServiceManager.shared.copyDiagnosticsToClipboard()
-        let original = L(.copyDiagnostics)
-        diagnosticsButton.title = L(.copied)
-        copyFeedbackTimer?.invalidate()
-        copyFeedbackTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
-            self?.diagnosticsButton.title = original
-        }
+    @objc private func didClickDiagnostics() {
+        DiagnosticsWindowController.shared.showDiagnostics()
     }
     
     // MARK: - Port Actions

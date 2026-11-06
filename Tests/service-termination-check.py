@@ -37,6 +37,7 @@ PHASE
 struct ServiceSnapshot {
     var phase: ServicePhase = .stopped
     var isManaged = true
+    var runningDshVersion: String? = nil
     var isRunning: Bool { phase == .running }
 }
 final class ServiceManager {

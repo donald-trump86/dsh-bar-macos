@@ -207,7 +207,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var details: [String] = []
         if let pid = snapshot.pid { details.append(L(.pidLabel, ["pid": "\(pid)"])) }
         if let uptime = snapshot.uptime { details.append(L(.upLabel, ["duration": Self.formatDuration(uptime)])) }
-        if let version = snapshot.dshVersion { details.append(L(.dshVersionLabel, ["version": version])) }
+        if snapshot.isRunning {
+            details.append(snapshot.runningDshVersion.map { L(.dshRunningVersion, ["version": $0]) }
+                ?? L(.dshRunningVersionUnknown))
+            if snapshot.needsVersionRestart { details.append(L(.dshVersionRestartRequired)) }
+        } else if let version = snapshot.dshVersion {
+            details.append(L(.dshInstalledVersion, ["version": version]))
+        }
         if details.isEmpty, let message = snapshot.message {
             details.append(message)
         }

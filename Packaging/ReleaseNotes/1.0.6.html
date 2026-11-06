@@ -1,0 +1,9 @@
+<h3>What's changed</h3>
+<ul>
+<li>Added Environment Diagnostics in Settings, with English and Chinese guidance for missing or failing DSH, Node and npm commands, port conflicts, and service version differences.</li>
+<li>The diagnostics window shows command paths, versions and the app's search path. Recheck the environment, copy a redacted report, view logs or open the permissions guide from the same window. Version checks run in the background with a timeout and bounded output.</li>
+<li>Separated the installed CLI version from the managed service version recorded at launch. When both versions are known and differ, the app prompts you to restart the service to use the installed version. Older records and externally started services show an unknown running version.</li>
+<li>Fixed stale version information and installed-channel markers when environment checks, installation, service startup or restart preflight checks overlap.</li>
+</ul>
+<h3>Service updates</h3>
+<p>Installing a CLI version does not restart the service automatically. Existing service records without a recorded version remain compatible; the running version becomes known after the next start managed by DSH Bar.</p>

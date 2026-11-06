@@ -39,6 +39,10 @@ final class Localization {
         case recording, windowTitlePreferences
         case hotKeyConflictTitle, hotKeyConflict
         case copyDiagnostics
+        case diagnosticsTitle, diagnosticsOpen, diagnosticsIntroduction, diagnosticsChecking, diagnosticsNotChecked
+        case diagnosticsCommandMissing, diagnosticsCommandFailed, diagnosticsNodeAdvice, diagnosticsDshAdvice
+        case diagnosticsPortAdvice, diagnosticsRestartAdvice, diagnosticsUnknownVersion
+        case diagnosticsLogAdvice, diagnosticsCommandsOK, diagnosticsPathAdvice
         case installEllipsis, checkingEllipsis, defaultButton, later
 
         // App identity
@@ -56,7 +60,8 @@ final class Localization {
         case statusChecking, statusStarting, statusRunning, statusStopping
         case statusRestarting, statusStoppedWord, statusPortInUse, statusError
         case runningPort, serviceNotRunning, checkingServiceStatus, checkingServiceDetails
-        case externalService, pidLabel, upLabel, dshVersionLabel
+        case externalService, pidLabel, upLabel, dshRunningVersion, dshInstalledVersion
+        case dshRunningVersionUnknown, dshVersionRestartRequired
 
         // Buttons / menu items
         case openWeb, startService, stopService, stopExternal, stopExternalMenu
@@ -226,6 +231,21 @@ final class Localization {
         .hotKeyConflictTitle: "Shortcut unavailable",
         .hotKeyConflict: "{keys} could not be registered. Check whether another app uses this combination, then try again. (system code {code})",
         .copyDiagnostics: "Copy Diagnostics",
+        .diagnosticsTitle: "Environment Diagnostics",
+        .diagnosticsOpen: "Diagnostics…",
+        .diagnosticsIntroduction: "Check local command paths, versions, and service state, with suggested next steps.",
+        .diagnosticsChecking: "Checking DSH, Node, and npm. Each version command has a 3-second timeout.",
+        .diagnosticsNotChecked: "Click Recheck to inspect the command environment.",
+        .diagnosticsCommandMissing: "{command} was not found in the app's command PATH.",
+        .diagnosticsCommandFailed: "Could not verify {command} --version: the command failed, timed out, or returned unexpected output.",
+        .diagnosticsNodeAdvice: "Install Node.js with npm, then recheck. If already installed, compare its command directory with the PATH below.",
+        .diagnosticsDshAdvice: "Install or repair DSH in the Versions section of Preferences, then recheck.",
+        .diagnosticsPortAdvice: "Port {port} is occupied or the listener could not be identified as DSH. Check Live Logs; close the conflicting application or choose another port in Preferences.",
+        .diagnosticsRestartAdvice: "Running {running}; installed {installed}. Restart the service from Preferences to apply the installed version.",
+        .diagnosticsUnknownVersion: "The running version is unknown. Older records and services started outside this app have no recorded launch version.",
+        .diagnosticsLogAdvice: "Open Live Logs for the startup error, then use the Permissions Guide if access was denied.",
+        .diagnosticsCommandsOK: "DSH, Node, and npm respond to version checks. For startup problems, open Live Logs or the Permissions Guide.",
+        .diagnosticsPathAdvice: "The app uses the PATH below without loading interactive shell profiles. If your terminal finds different commands, compare their paths with this report.",
         .done: "Done",
         .close: "Close",
         .reset: "Reset",
@@ -260,7 +280,10 @@ final class Localization {
         .externalService: "External DeepSeek Harness service",
         .pidLabel: "PID {pid}",
         .upLabel: "Up {duration}",
-        .dshVersionLabel: "DSH {version}",
+        .dshRunningVersion: "Running DSH {version}",
+        .dshInstalledVersion: "Installed DSH {version}",
+        .dshRunningVersionUnknown: "Running DSH version unknown",
+        .dshVersionRestartRequired: "Restart to apply installed version",
 
         // Buttons / menu items
         .openWeb: "Open Web",
@@ -311,7 +334,7 @@ final class Localization {
         .language: "Language",
         .languageDesc: "Applies immediately, no restart needed",
         .languageAutomatic: "Automatic",
-        .searchingPath: "Searching PATH with which dsh…",
+        .searchingPath: "Checking DSH, Node, and npm in PATH…",
         .detectingDsh: "Detecting DSH CLI…",
         .installedAt: "Installed: {path}{version}",
         .notFoundInstallNpm: "Not found — install with npm to start the service",
@@ -350,7 +373,7 @@ final class Localization {
         .installingEllipsis: "Installing…",
         .installProgressStatus: "Installing {tag} · Elapsed {elapsed}",
         .installFailedTitle: "Install failed",
-        .installDoneRestartNotice: "Installed. Restart the service to use it.",
+        .installDoneRestartNotice: "Installed version changed. Restart the service to apply it.",
         .installTagInvalid: "This channel name is not a valid npm tag.",
         .installAlreadyRunning: "An install is already running. Wait for it to finish.",
         .installNoOutput: "npm produced no output, so the result is unknown.",
@@ -506,6 +529,21 @@ final class Localization {
         .hotKeyConflictTitle: "快捷键不可用",
         .hotKeyConflict: "无法注册 {keys}。请检查其他应用是否使用了此组合，然后重试。（系统代码 {code}）",
         .copyDiagnostics: "复制诊断信息",
+        .diagnosticsTitle: "环境诊断",
+        .diagnosticsOpen: "环境诊断…",
+        .diagnosticsIntroduction: "检查本机命令的路径、版本和服务状态，并给出下一步建议。",
+        .diagnosticsChecking: "正在检查 DSH、Node 和 npm，每条版本命令的超时为 3 秒。",
+        .diagnosticsNotChecked: "点击“重新检测”检查命令环境。",
+        .diagnosticsCommandMissing: "在应用使用的 PATH 中未找到 {command}。",
+        .diagnosticsCommandFailed: "无法确认 {command} --version 的结果：命令可能报错、超时或返回了无效版本。",
+        .diagnosticsNodeAdvice: "安装包含 npm 的 Node.js 后重新检测；若已安装，请对照下方 PATH 检查命令目录。",
+        .diagnosticsDshAdvice: "在偏好设置的版本区安装或修复 DSH，然后重新检测。",
+        .diagnosticsPortAdvice: "端口 {port} 已被占用，或无法将监听程序识别为 DSH。请先查看实时日志，再关闭冲突应用或在偏好设置中更换端口。",
+        .diagnosticsRestartAdvice: "正在运行 {running}，已安装 {installed}。在偏好设置中重启服务后，新安装的版本才会生效。",
+        .diagnosticsUnknownVersion: "运行版本未知。旧版服务记录及应用外启动的服务没有记录启动版本。",
+        .diagnosticsLogAdvice: "查看实时日志中的启动错误；若提示访问被拒绝，可打开权限指引。",
+        .diagnosticsCommandsOK: "DSH、Node 和 npm 均通过版本检测。若服务仍无法启动，请查看实时日志或权限指引。",
+        .diagnosticsPathAdvice: "应用使用下方 PATH，不加载交互式 shell 配置。若终端找到的命令不同，请对照报告中的路径检查。",
         .done: "完成",
         .close: "关闭",
         .reset: "恢复默认",
@@ -540,7 +578,10 @@ final class Localization {
         .externalService: "外部启动的 DeepSeek Harness 服务",
         .pidLabel: "PID {pid}",
         .upLabel: "已运行 {duration}",
-        .dshVersionLabel: "DSH {version}",
+        .dshRunningVersion: "运行 DSH {version}",
+        .dshInstalledVersion: "已安装 DSH {version}",
+        .dshRunningVersionUnknown: "运行版本未知",
+        .dshVersionRestartRequired: "重启后应用已安装版本",
 
         // Buttons / menu items
         .openWeb: "打开 Web",
@@ -591,7 +632,7 @@ final class Localization {
         .language: "语言",
         .languageDesc: "立即生效，无需重启",
         .languageAutomatic: "自动",
-        .searchingPath: "正在通过 which dsh 搜索 PATH…",
+        .searchingPath: "正在检查 PATH 中的 DSH、Node 和 npm…",
         .detectingDsh: "正在检测 DSH CLI…",
         .installedAt: "已安装：{path}{version}",
         .notFoundInstallNpm: "未找到 — 需用 npm 安装后才能启动服务",
@@ -630,7 +671,7 @@ final class Localization {
         .installingEllipsis: "正在安装…",
         .installProgressStatus: "正在安装 {tag} · 已用时 {elapsed}",
         .installFailedTitle: "安装失败",
-        .installDoneRestartNotice: "已安装，重启服务后生效。",
+        .installDoneRestartNotice: "已安装版本发生变化，重启服务后生效。",
         .installTagInvalid: "这个通道名不是合法的 npm tag。",
         .installAlreadyRunning: "已有安装任务在进行，请等待它结束。",
         .installNoOutput: "npm 没有输出，结果未知。",

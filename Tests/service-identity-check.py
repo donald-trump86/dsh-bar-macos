@@ -26,7 +26,8 @@ members = [extract(marker) for marker in (
     "private struct ManagedServiceRecord", "private func preflightRestart(",
     "private func updateSnapshot(", "func performWhenLifecycleIdle(",
     "private func scheduleLifecycleIdleActions(", "func checkStatus(", "private func probe(",
-    "private func applyProbe(", "private func saveManagedRecord(",
+    "private func applyProbe(", "private static func loadManagedRecord(",
+    "private func saveManagedRecord(",
     "private func clearManagedRecord(", "private func finishStop(",
     "func stopService(", "private func handleUnexpectedExit(",
     "private func scheduleAutoRestart(", "private func pruneAutoRestartAttempts(",
@@ -34,6 +35,8 @@ members = [extract(marker) for marker in (
     "private func beginIntentionalStop(", "private func endIntentionalStop(",
     "func startService(", "private func beginLaunch(", "private func launchAndWait(",
     "var baseUrl:", "func openBrowser(", "func restartService(",
+    "func restartUnmanagedService(", "private enum ExternalStopOutcome",
+    "private func unmanagedRefusalReason(", "private func finishUnmanagedStop(",
 )]
 # Optional only to allow a red run against the pre-fix production source.
 if "    private func matchesManagedIdentity(" in SOURCE:
@@ -114,6 +117,11 @@ final class ServiceManager {
     var observedPID: Int32? = 1234
     var observedStart: Date? = Date(timeIntervalSince1970: 1_000_000)
     var launchCount = 0
+    var detectionCount = 0
+    var inertLaunchSucceeds = false
+    var detectedDshVersion: String? = "test"
+    var installedVersionAfterLaunch: String?
+    var installedVersionOnNextProbe: String?
     var stopCount = 0
     var stopResult: StopResult = .none
     let session: URLSession
@@ -122,15 +130,47 @@ final class ServiceManager {
         config.protocolClasses = [ProbeTransport.self]
         session = URLSession(configuration: config)
     }
-    func isPortListening(_ port: Int) -> Bool { listening }
+    func isPortListening(_ port: Int) -> Bool {
+        if let version = installedVersionOnNextProbe {
+            installedVersionOnNextProbe = nil
+            // Publish before the preflight worker can enqueue its refusal restore.
+            DispatchQueue.main.async {
+                self.updateSnapshot {
+                    $0.dshPath = "/updated/dsh"
+                    $0.dshVersion = version
+                }
+            }
+        }
+        return listening
+    }
     func listenerPID(on port: Int) -> Int32? { observedPID }
     func processStartDate(pid: Int32) -> Date? { observedStart }
     func findDshBinary() -> String? { "/fake/dsh" }
     func runStopScript(port: Int) -> StopResult { stopCount += 1; return stopResult }
-    func readDshVersion(at path: String) -> String? { "test" }
+    func runExternalStopScript(port: Int, pid: Int32) -> ExternalStopOutcome {
+        stopCount += 1
+        return .refused("unexpected external stop")
+    }
+    func readDshVersion(at path: String) -> String? { detectedDshVersion }
+    func detectDshInstallation() { detectionCount += 1 } // No host inspection in this fixture.
     func launchProcess(path: String, port: Int) throws -> (Process, LogWriterProcess) {
         launchCount += 1
-        throw NSError(domain: "IsolatedTestLaunch", code: 1)
+        guard inertLaunchSucceeds else { throw NSError(domain: "IsolatedTestLaunch", code: 1) }
+        let process = Process() // Never run: PID 0 stands in for the launched child.
+        observedPID = process.processIdentifier
+        listening = true
+        ProbeTransport.body = "dsh web"
+        if let installedVersionAfterLaunch {
+            detectedDshVersion = installedVersionAfterLaunch
+            // A newer disk inspection publishes while the captured-A launch waits.
+            DispatchQueue.main.async {
+                self.updateSnapshot {
+                    $0.dshPath = "/updated/dsh"
+                    $0.dshVersion = installedVersionAfterLaunch
+                }
+            }
+        }
+        return (process, LogWriterProcess())
     }
     static func terminateFailedLaunch(_ process: Process) {
         expect(false, "test unexpectedly reached real launch cleanup")
@@ -152,16 +192,21 @@ func pump(until condition: () -> Bool, seconds: TimeInterval = 5) {
 }
 let ownedPID: Int32 = 1234
 let ownedStart = Date(timeIntervalSince1970: 1_000_000)
+let versionA = "1.0.0"
+let versionB = "2.0.0"
 let auth = URL(string: "http://127.0.0.1:3080/?token=synthetic-test-only")!
 func fixture() -> ServiceManager {
     let manager = ServiceManager()
-    manager.saveManagedRecord(.init(pid: ownedPID, port: 3080,
-                                    startedAt: ownedStart, executablePath: "/fake/dsh"))
+    var record = ServiceManager.ManagedServiceRecord(pid: ownedPID, port: 3080,
+        startedAt: ownedStart, executablePath: "/fake/dsh")
+    record.dshVersion = versionA
+    manager.saveManagedRecord(record)
     try! "1234".write(to: manager.pidFileURL, atomically: true, encoding: .utf8)
     manager.authenticatedURL = auth
     manager.snapshot = .init(phase: .running, port: 3080, pid: ownedPID,
-        startedAt: ownedStart, dshPath: "/fake/dsh", dshVersion: nil,
+        startedAt: ownedStart, dshPath: "/fake/dsh", dshVersion: versionA,
         message: nil, isManaged: true)
+    manager.snapshot.runningDshVersion = versionA
     ProbeTransport.body = nil
     return manager
 }
@@ -174,6 +219,9 @@ func poll(_ manager: ServiceManager, expectedHealthy: Bool) {
 }
 func retained(_ manager: ServiceManager) {
     expect(manager.managedRecord?.pid == ownedPID, "HTTP failure erased owned record")
+    expect(manager.managedRecord?.dshVersion == versionA
+           && ServiceManager.loadManagedRecord()?.dshVersion == versionA,
+           "probe or installed-version refresh rewrote the launch version")
     expect(manager.authenticatedURL == auth, "HTTP failure erased owned auth URL")
     expect(FileManager.default.fileExists(atPath: ServiceManager.managedRecordURL.path),
            "HTTP failure erased persisted record")
@@ -187,7 +235,46 @@ func cleared(_ manager: ServiceManager) {
     expect(!FileManager.default.fileExists(atPath: manager.pidFileURL.path),
            "conclusive identity change retained PID file")
     expect(!manager.snapshot.isManaged, "identity mismatch claimed management")
+    expect(manager.snapshot.runningDshVersion == nil && !manager.snapshot.needsVersionRestart,
+           "cleared identity retained a running version or restart notice")
 }
+let legacyData = try! JSONSerialization.data(withJSONObject: [
+    "pid": Int(ownedPID), "port": 3080,
+    "startedAt": ownedStart.timeIntervalSinceReferenceDate,
+    "executablePath": "/fake/dsh",
+])
+try! legacyData.write(to: ServiceManager.managedRecordURL)
+guard let legacyRecord = ServiceManager.loadManagedRecord() else {
+    fatalError("legacy managed record without dshVersion did not decode")
+}
+expect(legacyRecord.pid == ownedPID && legacyRecord.port == 3080
+       && legacyRecord.startedAt == ownedStart && legacyRecord.executablePath == "/fake/dsh"
+       && legacyRecord.dshVersion == nil, "legacy record lost identity or invented a launch version")
+let legacy = ServiceManager()
+legacy.managedRecord = legacyRecord
+legacy.snapshot.dshVersion = versionB
+ProbeTransport.body = "dsh web"
+poll(legacy, expectedHealthy: true)
+expect(legacy.snapshot.isManaged && legacy.snapshot.runningDshVersion == nil
+       && !legacy.snapshot.needsVersionRestart,
+       "legacy record borrowed installed CLI version or demanded an unproven restart")
+expect(ServiceManager.loadManagedRecord()?.dshVersion == nil,
+       "healthy legacy probe backfilled a version without a managed launch")
+var knownRecord = legacyRecord
+knownRecord.dshVersion = versionA
+legacy.saveManagedRecord(knownRecord)
+let roundTripped = ServiceManager.loadManagedRecord()
+expect(roundTripped?.dshVersion == versionA && roundTripped?.pid == ownedPID
+       && roundTripped?.startedAt == ownedStart,
+       "known launch version did not survive actual JSON save/load")
+let restored = ServiceManager()
+restored.managedRecord = roundTripped
+restored.snapshot.dshVersion = versionB
+poll(restored, expectedHealthy: true)
+expect(restored.snapshot.runningDshVersion == versionA && restored.snapshot.needsVersionRestart,
+       "app relaunch could not recover installed/running divergence from verified identity")
+print("PASS legacy record decodes unknown; known version round-trips and restores after identity verification")
+
 let manager = fixture()
 var observed: [ServiceSnapshot] = []
 manager.statusObservers[UUID()] = { observed.append($0) }
@@ -195,6 +282,8 @@ poll(manager, expectedHealthy: false)
 retained(manager)
 expect(manager.snapshot.phase == .portConflict && !manager.snapshot.isManaged,
        "HTTP failure falsely claimed healthy/managed service or free port")
+expect(manager.snapshot.runningDshVersion == nil && !manager.snapshot.needsVersionRestart,
+       "HTTP conflict retained a service version that is not currently verified")
 expect(observed.last?.phase == .portConflict && observed.last?.isManaged == false,
        "observer did not receive truthful unhealthy status")
 expect(manager.lastUnexpectedExit == nil && manager.launchCount == 0,
@@ -205,13 +294,38 @@ retained(manager)
 ProbeTransport.body = "<script>window.__DSH_BOOT__ = {};</script>"
 poll(manager, expectedHealthy: true)
 expect(manager.snapshot.isRunning && manager.snapshot.isManaged, "healthy same PID was permanently external")
+expect(manager.snapshot.runningDshVersion == versionA && !manager.snapshot.needsVersionRestart,
+       "same PID recovery lost known launch version or demanded restart for equal versions")
 retained(manager)
+manager.updateSnapshot { $0.dshVersion = nil }
+expect(manager.snapshot.runningDshVersion == versionA && !manager.snapshot.needsVersionRestart,
+       "unknown installed version invented a mismatch or erased the running version")
+manager.updateSnapshot { $0.dshVersion = versionB }
+expect(manager.snapshot.runningDshVersion == versionA && manager.snapshot.needsVersionRestart,
+       "installed A -> B falsely changed the running version or suppressed restart")
+poll(manager, expectedHealthy: true)
+retained(manager)
+expect(manager.snapshot.dshVersion == versionB && manager.snapshot.runningDshVersion == versionA
+       && manager.snapshot.needsVersionRestart,
+       "same PID poll replaced launch version A with installed version B")
+var unowned = manager.snapshot
+unowned.isManaged = false
+expect(!unowned.needsVersionRestart, "unmanaged snapshot demanded a version restart")
+for phase: ServicePhase in [.checking, .starting, .stopping, .restarting, .portConflict, .error, .stopped] {
+    var inactive = manager.snapshot
+    inactive.phase = phase
+    expect(!inactive.needsVersionRestart, "non-running phase demanded a version restart")
+}
 manager.listening = false
 poll(manager, expectedHealthy: false) // Existing one-miss debounce.
 expect(manager.snapshot.isRunning && manager.managedRecord != nil, "debounce disappeared")
+expect(manager.snapshot.runningDshVersion == versionA && manager.snapshot.needsVersionRestart,
+       "first-miss debounce discarded the known running version or pending restart")
 poll(manager, expectedHealthy: false)
 expect(manager.snapshot.phase == .stopped && manager.managedRecord == nil,
        "actual exit did not release owned record")
+expect(manager.snapshot.runningDshVersion == nil && !manager.snapshot.needsVersionRestart,
+       "stopped service retained a running version or version restart notice")
 expect(manager.lastUnexpectedExitPID == ownedPID && ServiceNotifier.shared.exits == 1,
        "actual exit lost owned crash attribution")
 pump(until: { manager.snapshot.phase == .error && manager.launchCount == 1 })
@@ -224,6 +338,7 @@ print("PASS HTTP failure -> retained record/auth -> healthy managed -> actual ex
 for healthy in [false, true] {
     for reused in [false, true] {
         let changed = fixture()
+        changed.updateSnapshot { $0.dshVersion = versionB }
         ProbeTransport.body = healthy ? "DeepSeek Harness" : nil
         changed.observedPID = reused ? ownedPID : 9999
         changed.observedStart = reused ? ownedStart.addingTimeInterval(5) : ownedStart
@@ -240,6 +355,7 @@ print("PASS changed PID and >=5s reused start time clear identity on unhealthy a
 
 for missingPID in [false, true] {
     let uncertain = fixture()
+    uncertain.updateSnapshot { $0.dshVersion = versionB }
     uncertain.observedPID = missingPID ? nil : ownedPID
     uncertain.observedStart = nil
     poll(uncertain, expectedHealthy: false)
@@ -248,12 +364,17 @@ for missingPID in [false, true] {
     poll(uncertain, expectedHealthy: true)
     retained(uncertain)
     expect(!uncertain.snapshot.isManaged, "missing PID/start fingerprint falsely claimed management")
+    expect(uncertain.snapshot.runningDshVersion == nil && !uncertain.snapshot.needsVersionRestart,
+           "uncertain identity exposed a saved version or claimed a known mismatch")
     uncertain.stopService { success, _ in expect(!success, "unverified process stop was allowed") }
     expect(uncertain.stopCount == 0, "unverified identity reached stop script")
     uncertain.observedPID = ownedPID
     uncertain.observedStart = ownedStart
     poll(uncertain, expectedHealthy: true)
     expect(uncertain.snapshot.isManaged, "restored fingerprint could not re-recognize management")
+    expect(uncertain.snapshot.dshVersion == versionB && uncertain.snapshot.runningDshVersion == versionA
+           && uncertain.snapshot.needsVersionRestart,
+           "restored fingerprint adopted installed B instead of retained launch version A")
 }
 print("PASS inconclusive PID/start retains identity without granting management/control")
 
@@ -288,6 +409,18 @@ for pid: Int32? in [nil, 8888] {
 }
 print("PASS unrelated/unknown listening ports remain occupied and foreign processes uncontrollable")
 
+let external = ServiceManager()
+external.clearManagedRecord()
+external.snapshot.dshVersion = versionB
+ProbeTransport.body = "dsh web"
+poll(external, expectedHealthy: true)
+expect(external.snapshot.isRunning && !external.snapshot.isManaged
+       && external.snapshot.runningDshVersion == nil && !external.snapshot.needsVersionRestart,
+       "external service borrowed installed CLI version or claimed a known mismatch")
+expect(external.managedRecord == nil && ServiceManager.loadManagedRecord() == nil,
+       "healthy external service created a managed launch record")
+print("PASS healthy external service remains unknown without writing launch provenance")
+
 let stopping = fixture()
 let unresponsive = stopping.probe(port: 3080)
 stopping.finishStop(result: .failed("stop failed"), probe: unresponsive, port: 3080) { success, _ in
@@ -296,7 +429,16 @@ stopping.finishStop(result: .failed("stop failed"), probe: unresponsive, port: 3
 retained(stopping)
 expect(stopping.snapshot.phase == .portConflict && !stopping.snapshot.isManaged,
        "failed stop reported healthy/managed or free")
-print("PASS failed stop with same unresponsive listener preserves identity and reports failure")
+expect(stopping.snapshot.runningDshVersion == nil && !stopping.snapshot.needsVersionRestart,
+       "failed stop conflict retained a running version or known mismatch")
+let stopped = fixture()
+stopped.updateSnapshot { $0.dshVersion = versionB }
+stopped.finishStop(result: .stopped, probe: .unavailable, port: 3080) { success, _ in
+    expect(success, "synthetic successful stop did not finish")
+}
+cleared(stopped)
+expect(stopped.snapshot.phase == .stopped, "successful stop did not publish stopped")
+print("PASS failed stop preserves identity without version claim; successful stop clears launch state")
 
 func startOccupied(_ manager: ServiceManager) {
     var callbacks: [Bool] = []
@@ -441,6 +583,106 @@ for result: ServiceManager.StopResult in [.failed("synthetic stop failure"), .fo
     cleared(vanished)
 }
 print("PASS failed/foreign restart observed vacancy clears trust without launch or crash recovery")
+
+for managed in [true, false] {
+    let preflight = fixture()
+    if !managed {
+        preflight.clearManagedRecord()
+        preflight.authenticatedURL = nil
+        preflight.snapshot.isManaged = false
+        preflight.snapshot.runningDshVersion = nil
+    }
+    SettingsManager.shared.port = 3081 // Occupied destination: refuse before touching 3080.
+    preflight.installedVersionOnNextProbe = versionB
+    ProbeTransport.body = "dsh web"
+    var newerInstallationPublished = false
+    preflight.statusObservers[UUID()] = { snapshot in
+        if snapshot.phase == .restarting && snapshot.dshVersion == versionB {
+            newerInstallationPublished = true
+        }
+        if newerInstallationPublished {
+            expect(snapshot.dshPath == "/updated/dsh" && snapshot.dshVersion == versionB,
+                   "preflight refusal rolled back a newer installed path/version")
+        }
+    }
+    var callbacks: [Bool] = []
+    let finish: (Bool, String?) -> Void = { success, message in
+        callbacks.append(success)
+        expect(message != nil, "preflight refusal lost its explanation")
+    }
+    if managed {
+        preflight.restartService(completion: finish)
+    } else {
+        preflight.restartUnmanagedService(pid: ownedPID, completion: finish)
+    }
+    pump(until: { !callbacks.isEmpty })
+    expect(newerInstallationPublished && callbacks == [false]
+           && preflight.stopCount == 0 && preflight.launchCount == 0,
+           "refused preflight stopped/launched a process or missed the concurrent installation")
+    expect(preflight.snapshot.isRunning && preflight.snapshot.port == 3080
+           && preflight.snapshot.pid == ownedPID && preflight.snapshot.isManaged == managed
+           && !preflight.intentionalStopInFlight,
+           "preflight refusal failed to restore the untouched service")
+    expect(preflight.snapshot.runningDshVersion == (managed ? versionA : nil)
+           && preflight.snapshot.needsVersionRestart == managed,
+           "preflight refusal lost managed version divergence or invented an external version")
+    if managed {
+        retained(preflight)
+    } else {
+        expect(preflight.managedRecord == nil && preflight.authenticatedURL == nil
+               && ServiceManager.loadManagedRecord() == nil,
+               "external preflight refusal created launch provenance or auth")
+    }
+    SettingsManager.shared.port = 3080
+}
+print("PASS managed/external preflight refusal retains newer installed facts and restores service identity")
+
+let launching = ServiceManager()
+launching.clearManagedRecord()
+launching.listening = false
+launching.inertLaunchSucceeds = true
+launching.detectedDshVersion = versionA
+launching.installedVersionAfterLaunch = versionB
+launching.snapshot.dshPath = "/fake/dsh"
+launching.snapshot.dshVersion = versionA
+var launchCallbacks: [Bool] = []
+var newerInstallationPublished = false
+launching.statusObservers[UUID()] = { snapshot in
+    if snapshot.phase == .starting && snapshot.dshVersion == versionB {
+        newerInstallationPublished = true
+    }
+    if newerInstallationPublished {
+        expect(snapshot.dshPath == "/updated/dsh" && snapshot.dshVersion == versionB,
+               "late launch result rolled back newer installed path/version")
+    }
+    if snapshot.isRunning {
+        expect(ServiceManager.loadManagedRecord()?.dshVersion == versionA,
+               "running observer saw service before launch version was persisted")
+    }
+}
+launching.startService { success, message in
+    launchCallbacks.append(success)
+    expect(message == nil, "inert successful launch reported a failure")
+}
+pump(until: { !launchCallbacks.isEmpty })
+expect(launchCallbacks == [true] && launching.launchCount == 1 && launching.snapshot.isManaged,
+       "actual Start did not complete exactly one inert managed launch")
+expect(newerInstallationPublished && launching.detectionCount == 1,
+       "successful launch failed to request one disk refresh after the newer installation published")
+expect(launching.snapshot.dshVersion == versionB && launching.snapshot.runningDshVersion == versionA
+       && launching.snapshot.needsVersionRestart
+       && ServiceManager.loadManagedRecord()?.dshVersion == versionA,
+       "successful launch overwrote newer installed version or lost captured running version")
+poll(launching, expectedHealthy: true)
+expect(launching.snapshot.dshVersion == versionB && launching.snapshot.runningDshVersion == versionA
+       && launching.snapshot.needsVersionRestart
+       && ServiceManager.loadManagedRecord()?.dshVersion == versionA,
+       "post-launch probe replaced the running or persisted launch version")
+launching.finishStop(result: .stopped, probe: .unavailable, port: 3080) { success, _ in
+    expect(success, "inert child cleanup did not finish")
+}
+cleared(launching)
+print("PASS actual Start persists pre-spawn version without rolling back a newer installed path/version")
 '''
 program = (header + "enum Key: String { case " + ", ".join(keys) + " }\n"
            + "func L(_ key: Key, _ values: [String: String] = [:]) -> String { key.rawValue }\n"

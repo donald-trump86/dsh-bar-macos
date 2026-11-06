@@ -38,6 +38,8 @@ SOURCE_FILES=(
     Sources/main.swift
     Sources/AppDelegate.swift
     Sources/ServiceManager.swift
+    Sources/EnvironmentDiagnostics.swift
+    Sources/DiagnosticsWindow.swift
     Sources/RotatingLogWriter.swift
     Sources/HotKeyManager.swift
     Sources/SettingsManager.swift

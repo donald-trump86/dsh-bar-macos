@@ -198,4 +198,11 @@ else
     fail "permissions guide check failed — run python3 $SCRIPT_DIR/permissions-guide-check.py to see why"
 fi
 
+# 19. Inspect only fixture commands and exercise real detection coalescing.
+if python3 "$SCRIPT_DIR/environment-diagnostics-check.py"; then
+    pass "environment command deadlines, findings and current-version rechecks"
+else
+    fail "environment diagnostics check failed — run python3 $SCRIPT_DIR/environment-diagnostics-check.py to see why"
+fi
+
 exit $FAILED

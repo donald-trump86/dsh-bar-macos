@@ -132,12 +132,67 @@ func geometry(_ name: String, active: Bool) {
     expect(groups.count == 3 && groups[0] > groups[1] && groups[1] > groups[2], "group ordering/rows collapsed: \(name)")
     print("geometry \(name): \(Int(doc.bounds.width))×\(Int(doc.bounds.height)), \(controls.count) controls")
 }
+let service = ServiceManager.shared
+service.snapshot.phase = .running
+service.snapshot.dshVersion = "2.0.0"
+service.snapshot.runningDshVersion = "1.0.0"
+// Registry results may arrive before command detection, including on first open.
+panel.tagProbeState = .loaded(tags: ["next": "2.0.0"], installedVersion: nil)
+panel.updateState(service.snapshot)
+expect(panel.tagPopup.selectedItem?.title == L(.tagInstalledSuffix, ["tag": "next", "version": "2.0.0"]),
+       "new installed version did not update the already-loaded channel marker")
+expect(!panel.tagInstallButton.isEnabled, "already-installed sole channel still offers installation")
+service.snapshot.dshVersion = "1.0.0"
+panel.updateState(service.snapshot)
+expect(panel.tagPopup.selectedItem?.title == "next — 2.0.0" && panel.tagInstallButton.isEnabled,
+       "later disk recheck did not clear stale marker and offer the newer channel")
+service.snapshot.dshVersion = "2.0.0"
+panel.loadTagOptions()
+panel.updateState(service.snapshot)
+expect(panel.serviceDetailsLabel.stringValue.contains(L(.dshRunningVersion, ["version": "1.0.0"])), "service row used installed version")
+expect(panel.tagInfoLabel.stringValue == L(.installDoneRestartNotice), "installed/running mismatch lacks restart notice")
+panel.loadTagOptions()
+expect(panel.tagInfoLabel.stringValue == L(.installDoneRestartNotice), "channel refresh cleared restart notice")
+service.snapshot.runningDshVersion = "2.0.0"
+panel.updateState(service.snapshot)
+expect(panel.tagInfoLabel.stringValue != L(.installDoneRestartNotice), "same running version retained restart notice")
+service.snapshot.runningDshVersion = nil
+panel.updateState(service.snapshot)
+expect(panel.serviceDetailsLabel.stringValue.contains(L(.dshRunningVersionUnknown)), "unknown running version inferred from disk")
+service.snapshot.runningDshVersion = "1.0.0"
+service.environmentDiagnostics = EnvironmentDiagnostics(
+    dsh: CommandDiagnostic(path: "/fixture/bin/dsh", version: "2.0.0"),
+    node: CommandDiagnostic(path: "/fixture/bin/node", version: "v24.1.0"),
+    npm: CommandDiagnostic(path: "/fixture/bin/npm", version: "11.0.0"), searchPath: "/fixture/bin:/usr/bin:/bin")
+let beforeDetection = service.detectionCalls
+panel.didClickDiagnostics()
+panel.didClickDiagnostics()
+let diagnostics = DiagnosticsWindowController.shared
+let diagnosticWindow = diagnostics.window!
+expect(Set(PermissionsFixture.shownWindows).count == 1, "diagnostics did not reuse its window")
+expect(service.detectionCalls == beforeDetection + 2 && service.checkCalls == 2, "diagnostics entry did not recheck command/service state")
+expect(!diagnosticWindow.isVisible, "fixture exposed diagnostics window")
 for language: AppLanguage in [.english, .chinese] {
     SettingsManager.shared.language = language
     Localization.shared.apply(language: language)
     pump(0.1)
     for (style, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
         window.appearance = NSAppearance(named: appearance)
+        diagnosticWindow.appearance = NSAppearance(named: appearance)
+        diagnosticWindow.setContentSize(NSSize(width: 620, height: 440))
+        diagnostics.refresh()
+        pump(0.05)
+        diagnosticWindow.contentView!.layoutSubtreeIfNeeded()
+        expect(diagnosticWindow.title == L(.diagnosticsTitle), "diagnostics title did not follow language")
+        expect(diagnostics.reportView.string.contains(L(.diagnosticsRestartAdvice,
+            ["running": "1.0.0", "installed": "2.0.0"])), "diagnostics findings did not follow language")
+        expect(diagnostics.reportView.bounds.width > 500 && diagnostics.reportView.bounds.height > 100, "diagnostics report collapsed")
+        for button in [diagnostics.recheckButton, diagnostics.copyButton, diagnostics.logsButton, diagnostics.permissionsButton] {
+            let frame = button.convert(button.bounds, to: diagnosticWindow.contentView!)
+            expect(frame.minX >= 0 && frame.maxX <= 620 && frame.minY >= 0, "diagnostics button outside minimum width")
+            expect(button.bounds.width + 1 >= button.intrinsicContentSize.width, "diagnostics button title clipped")
+        }
+        capture(diagnosticWindow.contentView!, "\(language.rawValue)-\(style)-diagnostics")
         for width in [540, 580] {
             let stem = "\(language.rawValue)-\(style)-\(width)"
             requestedWidth = CGFloat(width)
@@ -185,7 +240,7 @@ expect(model.installActivity == beforeLanguage, "language rebuild reset install 
 geometry("language-rebuild", active: true)
 expect(panel.tagInstallStatusLabel.stringValue.contains("Cancelling"), "language rebuild retained old task text")
 expect(!window.isVisible, "fixture made dashboard visible")
-print("PASS settings layout: actual complete dashboard, 540/580 widths, English/Chinese, light/dark, idle/download/unknown/install/cancel, language rebuild; 24 PNGs at \(output.path)")
+print("PASS settings layout: actual complete dashboard, 540/580 widths, English/Chinese, light/dark, idle/download/unknown/install/cancel, language rebuild, service version provenance, reusable diagnostics window at minimum width; 28 PNGs at \(output.path)")
 '''
 
 fixture.compile_run(checks, full_dashboard=True,

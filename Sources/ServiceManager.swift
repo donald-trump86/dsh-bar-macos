@@ -30,8 +30,14 @@ struct ServiceSnapshot: Equatable {
     var dshVersion: String?
     var message: String?
     var isManaged: Bool
+    var runningDshVersion: String? = nil
 
     var isRunning: Bool { phase == .running }
+
+    var needsVersionRestart: Bool {
+        guard isRunning, isManaged, let dshVersion, let runningDshVersion else { return false }
+        return dshVersion != runningDshVersion
+    }
 
     var uptime: TimeInterval? {
         guard let startedAt else { return nil }
@@ -52,6 +58,10 @@ final class ServiceManager {
 
     private(set) var snapshot: ServiceSnapshot
     private(set) var dshDetectionComplete = false
+    private(set) var environmentDiagnostics: EnvironmentDiagnostics?
+    private var dshDetectionInFlight = false
+    private var dshRecheckRequested = false
+    private var pendingDshDetections: [(Bool) -> Void] = []
     var isRunning: Bool { snapshot.isRunning }
 
     private var statusObservers: [UUID: (ServiceSnapshot) -> Void] = [:]
@@ -142,6 +152,7 @@ final class ServiceManager {
         let port: Int
         let startedAt: Date
         let executablePath: String
+        var dshVersion: String? = nil
     }
 
     private init() {
@@ -204,6 +215,9 @@ final class ServiceManager {
     private func updateSnapshot(_ mutation: (inout ServiceSnapshot) -> Void) {
         precondition(Thread.isMainThread)
         mutation(&snapshot)
+        if !snapshot.isRunning || !snapshot.isManaged {
+            snapshot.runningDshVersion = nil
+        }
         for observer in Array(statusObservers.values) {
             observer(snapshot)
         }
@@ -271,19 +285,37 @@ final class ServiceManager {
     // MARK: - DSH Installation
 
     func detectDshInstallation(completion: ((Bool) -> Void)? = nil) {
+        precondition(Thread.isMainThread)
+        if let completion { pendingDshDetections.append(completion) }
+        if dshDetectionInFlight {
+            // A package install may have finished during this inspection. Run
+            // again before publishing, rather than overwrite it with old data.
+            dshRecheckRequested = true
+            return
+        }
+        dshDetectionInFlight = true
         dshDetectionComplete = false
         updateSnapshot { _ in }
+        let environment = Self.commandEnvironment()
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let self else { return }
-            let path = self.findDshBinary()
-            let version = path.flatMap { self.readDshVersion(at: $0) }
+            let diagnostics = EnvironmentDiagnostics.inspect(environment: environment)
             DispatchQueue.main.async {
+                guard let self else { return }
+                self.dshDetectionInFlight = false
+                if self.dshRecheckRequested {
+                    self.dshRecheckRequested = false
+                    self.detectDshInstallation()
+                    return
+                }
+                self.environmentDiagnostics = diagnostics
                 self.dshDetectionComplete = true
                 self.updateSnapshot {
-                    $0.dshPath = path
-                    $0.dshVersion = version
+                    $0.dshPath = diagnostics.dsh.path
+                    $0.dshVersion = diagnostics.dsh.version
                 }
-                completion?(path != nil)
+                let completions = self.pendingDshDetections
+                self.pendingDshDetections.removeAll()
+                for completion in completions { completion(diagnostics.dsh.path != nil) }
             }
         }
     }
@@ -297,53 +329,11 @@ final class ServiceManager {
     }
 
     private func findExecutable(named name: String) -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-        process.arguments = [name]
-        process.environment = Self.commandEnvironment()
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return nil
-        }
-
-        guard process.terminationStatus == 0 else { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let path = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty,
-              FileManager.default.isExecutableFile(atPath: path) else {
-            return nil
-        }
-        return path
+        EnvironmentDiagnostics.findExecutable(named: name, environment: Self.commandEnvironment())
     }
 
     private func readDshVersion(at path: String) -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = ["--version"]
-        process.environment = Self.commandEnvironment()
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return nil
-        }
-
-        let output = String(
-            data: pipe.fileHandleForReading.readDataToEndOfFile(),
-            encoding: .utf8
-        )?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return output?.split(separator: "\n").first.map(String.init)
+        EnvironmentDiagnostics.version(at: path, environment: Self.commandEnvironment())
     }
 
     static func commandEnvironment() -> [String: String] {
@@ -474,6 +464,7 @@ final class ServiceManager {
                 $0.startedAt = startedAt ?? $0.startedAt
                 $0.message = isManaged ? nil : L(.externalService)
                 $0.isManaged = isManaged
+                $0.runningDshVersion = isManaged ? managedRecord?.dshVersion : nil
             }
         case let .foreign(pid):
             consecutiveProbeMisses = 0
@@ -823,7 +814,11 @@ final class ServiceManager {
                 DispatchQueue.main.async {
                     self.authenticatedURL = previousAuthenticatedURL
                     self.updateSnapshot {
+                        let installedPath = $0.dshPath
+                        let installedVersion = $0.dshVersion
                         $0 = previousSnapshot
+                        $0.dshPath = installedPath
+                        $0.dshVersion = installedVersion
                         $0.message = reason
                     }
                     finish(false, reason)
@@ -992,7 +987,11 @@ final class ServiceManager {
             if let reason = self.preflightRestart(currentPort: currentPort, targetPort: targetPort) {
                 DispatchQueue.main.async {
                     self.updateSnapshot {
+                        let installedPath = $0.dshPath
+                        let installedVersion = $0.dshVersion
                         $0 = previousSnapshot
+                        $0.dshPath = installedPath
+                        $0.dshVersion = installedVersion
                         $0.message = reason
                         $0.isManaged = false
                     }
@@ -1223,11 +1222,6 @@ final class ServiceManager {
                 DispatchQueue.main.async {
                     self.launchedProcess = process
                     self.launchedLogWriter = logger
-                    self.updateSnapshot {
-                        $0.dshPath = dshPath
-                        $0.dshVersion = version
-                    }
-
                     switch finalProbe {
                     case let .harness(pid, detectedStart):
                         guard pid == process.processIdentifier else {
@@ -1254,7 +1248,8 @@ final class ServiceManager {
                             pid: process.processIdentifier,
                             port: currentPort,
                             startedAt: detectedStart ?? launchedAt,
-                            executablePath: dshPath
+                            executablePath: dshPath,
+                            dshVersion: version
                         )
                         self.saveManagedRecord(record)
                         self.authenticatedURL = launchAuthenticatedURL
@@ -1267,7 +1262,12 @@ final class ServiceManager {
                                 ? nil
                                 : L(.portChangedRestartToApply, ["port": "\(SettingsManager.shared.port)"])
                             $0.isManaged = true
+                            $0.runningDshVersion = version
                         }
+                        // The launch version belongs to this process. A newer
+                        // installation may already have been detected while it
+                        // started; refresh disk state without rolling it back.
+                        self.detectDshInstallation()
                         completion(true, nil)
                     case let .foreign(pid):
                         self.clearManagedRecord()
@@ -1738,7 +1738,7 @@ final class ServiceManager {
 
     /// A paste-ready bug report: what this machine is running, what state the
     /// service is in, and whether the hot key is actually live. It is assembled
-    /// from fields the snapshot already holds, then passed through the same
+    /// from current state and the latest environment inspection, then passed through the same
     /// token redactor the log window uses, so a captured URL can never leak the
     /// process token into a public issue.
     var diagnosticsSummary: String {
@@ -1758,6 +1758,8 @@ final class ServiceManager {
             "  managed by app: \(snapshot.isManaged)",
             "  pid: \(snapshot.pid.map(String.init) ?? "none")",
             "  uptime: \(snapshot.uptime.map { "\(Int($0))s" } ?? "n/a")",
+            "  running DSH version (recorded at launch): \(snapshot.runningDshVersion ?? "unknown")",
+            "  restart for installed version: \(snapshot.needsVersionRestart)",
             "  message: \(snapshot.message ?? "none")",
             "",
             "DSH CLI:",
@@ -1771,6 +1773,11 @@ final class ServiceManager {
             "Notifications: \(ServiceNotifier.shared.availability.shortDescription)",
             "Language: \(settings.language.rawValue)"
         ]
+        lines += ["", "Environment inspection: \(dshDetectionComplete ? "complete" : "in progress")"]
+        if let diagnostics = environmentDiagnostics {
+            lines += [diagnostics.report, "", "Findings:"]
+            lines += diagnostics.findings(for: snapshot).map { "  - \($0)" }
+        }
         return Self.redactingProcessTokens(in: lines.joined(separator: "\n"))
     }
 
