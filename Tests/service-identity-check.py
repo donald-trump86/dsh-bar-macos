@@ -58,6 +58,11 @@ final class NSWorkspace {
     static let shared = NSWorkspace()
     var lastURL: URL?
     func open(_ url: URL) { lastURL = url }
+    func urlForApplication(withBundleIdentifier bundleIdentifier: String) -> URL? { nil }
+}
+final class BrowserLauncher {
+    static let shared = BrowserLauncher()
+    func open(_ url: URL) { NSWorkspace.shared.open(url) }
 }
 final class ServiceNotifier {
     static let shared = ServiceNotifier()

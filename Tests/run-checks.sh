@@ -205,4 +205,11 @@ else
     fail "environment diagnostics check failed — run python3 $SCRIPT_DIR/environment-diagnostics-check.py to see why"
 fi
 
+# 20. Open Web must follow the chosen browser and fall back to the system default.
+if python3 "$SCRIPT_DIR/browser-picker-check.py"; then
+    pass "browser detection filters terminals and honours the chosen browser"
+else
+    fail "browser picker check failed — run python3 $SCRIPT_DIR/browser-picker-check.py to see why"
+fi
+
 exit $FAILED

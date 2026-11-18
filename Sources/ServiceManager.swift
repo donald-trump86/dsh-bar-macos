@@ -1697,13 +1697,13 @@ final class ServiceManager {
               record.port == snapshot.port, record.pid == snapshot.pid,
               let startedAt = snapshot.startedAt,
               abs(startedAt.timeIntervalSince(record.startedAt)) < 5 else {
-            NSWorkspace.shared.open(baseUrl)
+            BrowserLauncher.shared.open(baseUrl)
             return
         }
         let currentLaunchURL = snapshot.pid == launchedProcess?.processIdentifier
             ? launchedLogWriter?.authenticatedURL : nil
         let url = authenticatedURL ?? currentLaunchURL ?? baseUrl
-        NSWorkspace.shared.open(url.port == snapshot.port ? url : baseUrl)
+        BrowserLauncher.shared.open(url.port == snapshot.port ? url : baseUrl)
     }
 
     /// Replaces the process token in log text so the exported/shared view never

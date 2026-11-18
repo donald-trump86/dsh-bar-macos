@@ -52,6 +52,7 @@ SOURCE_FILES=(
     Sources/InstallProcess.swift
     Sources/ExternalServicePrompt.swift
     Sources/ServiceNotifier.swift
+    Sources/BrowserLauncher.swift
     Sources/Localization.swift
     Sources/UpdateManager.swift
 )

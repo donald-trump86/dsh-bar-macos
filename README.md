@@ -240,6 +240,7 @@ dsh-bar-macos/
 │   ├── DshVersionController.swift # npm dist-tag 探测与按 tag 安装 dsh
 │   ├── ExternalServicePrompt.swift # 结束外部启动服务的确认弹窗
 │   ├── ServiceNotifier.swift   # 系统通知与不可用时的降级
+│   ├── BrowserLauncher.swift   # 检测本机浏览器并决定 Open Web 用哪个打开
 │   └── Localization.swift      # 中英双语文案表（枚举键 + 缺失回退英文）
 ├── Resources/
 │   ├── AppIcon.icns            # 应用图标 (1024x1024)

@@ -127,6 +127,26 @@ final class SettingsManager {
         }
     }
 
+    // MARK: - Default Browser
+    private let preferredBrowserKey = "DSH_PreferredBrowser"
+
+    /// Bundle identifier of the browser `Open Web` uses; `nil` means the
+    /// system default handler. Not validated here on purpose: a stored app
+    /// can disappear, and `BrowserLauncher` is what re-checks eligibility.
+    var preferredBrowserBundleIdentifier: String? {
+        get {
+            guard let value = UserDefaults.standard.string(forKey: preferredBrowserKey) else { return nil }
+            return value.isEmpty ? nil : value
+        }
+        set {
+            if let newValue {
+                UserDefaults.standard.set(newValue, forKey: preferredBrowserKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: preferredBrowserKey)
+            }
+        }
+    }
+
     // MARK: - Launch At Login
     var isLaunchAtLoginEnabled: Bool {
         get {
