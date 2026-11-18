@@ -114,11 +114,13 @@ launcher.open(url); expect(NSWorkspace.shared.openedDefaultURLs.last == url, "cl
 expect(launcher.systemDefaultBrowserName() == nil, "missing default handler must not crash or invent a name")
 ```
 
-另外用文本断言锁住偏好键的读写形式（`Sources/SettingsManager.swift` 里 `"DSH_PreferredBrowser"` 恰好出现 2 次，`removeObject` 一次）：
+另外用文本断言锁住偏好键的读写形式（键写字面量一次，getter/setter 用常量名，与 `keyPort`、`keyPreferredDshTag` 同一种写法）：
 
 ```python
 setting = (ROOT / "Sources/SettingsManager.swift").read_text()
-assert setting.count('"DSH_PreferredBrowser"') == 2
+assert setting.count('"DSH_PreferredBrowser"') == 1
+assert "string(forKey: preferredBrowserKey)" in setting
+assert "set(newValue, forKey: preferredBrowserKey)" in setting
 assert "removeObject(forKey: preferredBrowserKey)" in setting
 ```
 
@@ -180,7 +182,7 @@ final class BrowserLauncher {
 }
 ```
 
-实现要点（其余由实现者按签名写）：`options()` 遍历 `urlsForApplications`，过滤 `isBrowser`、跳过无 bundle id 的项、按 identifier 去重、按 `displayName.localizedCaseInsensitiveCompare` 排序；`isBrowser` 检查 (a) `schemes` 里至少有一组同时含 http 与 https，(b) 所有组都不含 `clientSchemes`（`isDisjoint`），(c) `declaresHTML`；`displayName` 取 `url.deletingPathExtension().lastPathComponent`；`systemDefaultBrowserName` 用 `urlForApplication(toOpen: Self.sampleURL)` 再取显示名，取不到返回 `nil`；`open(_:)` 先读 `SettingsManager.shared.preferredBrowserBundleIdentifier`，能解析到 `urlForApplication(withBundleIdentifier:)` 且 `isBrowser(appURL)` 为真时 `NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())`，否则 `NSWorkspace.shared.open(url)`。
+实现要点（其余由实现者按签名写）：`options()` 遍历 `urlsForApplications`，过滤 `isBrowser`、跳过无 bundle id 的项、按 identifier 去重、按 `displayName.localizedCaseInsensitiveCompare` 排序；`isBrowser` 检查 (a) 所有协议组**合并后**同时含 `http` 与 `https`（Firefox 与 Zen 把它们分别登记在 `[["http"], ["https"], ["file"]]` 两个组里，所以不能按「某一组同时含两者」判断），(b) 所有组都不含 `clientSchemes`（`isDisjoint`），(c) `declaresHTML`；`displayName` 取 `url.deletingPathExtension().lastPathComponent`；`systemDefaultBrowserName` 用 `urlForApplication(toOpen: Self.sampleURL)` 再取显示名，取不到返回 `nil`；`open(_:)` 先读 `SettingsManager.shared.preferredBrowserBundleIdentifier`，能解析到 `urlForApplication(withBundleIdentifier:)` 且 `isBrowser(appURL)` 为真时 `NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())`，否则 `NSWorkspace.shared.open(url)`。
 
 - [ ] **Step 4: 加 `SettingsManager` 偏好键**
 
@@ -290,24 +292,36 @@ git commit -m "feat: open the Web console in a chosen browser"
 
 - [ ] **Step 1: 先写失败断言（改 `Tests/settings-layout-check.py`）**
 
-`controls` 列表加一项 `("browser picker", panel.browserPopup)`；标题键列表加 `.openWebBrowser, .openWebBrowserDesc`；`rowControls` 加 `(.openWebBrowser, panel.browserPopup)`；并在渲染断言中加两段：
+`controls` 列表加一项 `("browser picker", panel.browserPopup)`；标题键列表加 `.openWebBrowser`；`rowControls` 加 `(.openWebBrowser, panel.browserPopup)`（`browserPopup` 是 General 组的最后一行、控制列最靠右，正好是重叠断言要压的那条）。逐条渲染的 `geometry(_:active:)` 里只加一条与状态无关的宽度断言 `expect(panel.browserPopup.bounds.width >= 160, ...)`。
+
+列表内容与“重建后选择不丢”两条断言放在文件末尾、`geometry` 之外单独跑一次（它们在 `geometry` 内会污染其后所有组合：一旦把偏好设成 `com.example.chrome`，后续每次重建前的“系统默认在首位且被选中”就不再成立）：
 
 ```swift
-// 列表内容：系统默认在首位，随后是检测到的浏览器；长名字不越界。
-let items = panel.browserPopup.itemArray.map { $0.title }
-expect(items.count == 3, "browser picker items: \(items) in \(name)")
-expect(panel.browserPopup.selectedItem?.representedObject as? String == "", "system default must be the first, pre-selected item")
-expect(panel.browserPopup.bounds.width >= 160, "browser popup collapsed: \(name), width=\(panel.browserPopup.bounds.width)")
-expect(panel.browserPopup.itemArray[2].title == "Google Chrome for Testing", "long browser name missing: \(NameCheck) in \(name)")
-// 语言重建后选择不得丢失。
+// 列表内容：系统默认在首位，随后是按名排序的检测结果；长名字被接受而不是越界。
+SettingsManager.shared.preferredBrowserBundleIdentifier = nil
+panel.setupUI()
+panel.updateState(ServiceManager.shared.snapshot)
+let browserItems = panel.browserPopup.itemArray.map { $0.title }
+expect(panel.browserPopup.numberOfItems == 3, "browser picker items: \(browserItems)")
+expect(panel.browserPopup.selectedItem?.representedObject as? String == "",
+       "system default must be the first, pre-selected item")
+expect(browserItems[1] == "Google Chrome" && browserItems[2] == "Google Chrome for Testing",
+       "detected browsers missing or unsorted: \(browserItems)")
+expect(panel.browserPopup.selectedItem?.title.hasPrefix("System default") == true,
+       "system default item must name the handler: \(panel.browserPopup.selectedItem?.title ?? "none")")
+// 语言重建（setupUI）之后选择必须还在。
 SettingsManager.shared.preferredBrowserBundleIdentifier = "com.example.chrome"
 panel.setupUI()
 panel.updateState(ServiceManager.shared.snapshot)
 expect(panel.browserPopup.selectedItem?.representedObject as? String == "com.example.chrome",
-       "language rebuild reset the chosen browser: \(name)")
+       "language rebuild reset the chosen browser")
+// 记住的值在列表里消失时回到系统默认，而不是留空的选中项。
+SettingsManager.shared.preferredBrowserBundleIdentifier = "com.example.uninstalled"
+panel.setupUI()
+expect(panel.browserPopup.selectedItem?.representedObject as? String == "",
+       "a stale preference must fall back to the system default item")
+SettingsManager.shared.preferredBrowserBundleIdentifier = nil
 ```
-
-`NameCheck` 换成实际使用的键名常量；构建后 `browserPopup.bounds.width` 已在 `controls` 循环里被 `zero-size/outside document` 断言覆盖。
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -388,9 +402,10 @@ General 组的 rows 里，`permissionsAccess` 行之前插入：
         let identifier = browserPopup.selectedItem?.representedObject as? String
         SettingsManager.shared.preferredBrowserBundleIdentifier =
             (identifier?.isEmpty ?? true) ? nil : identifier
-        refreshBrowserOptions()
     }
 ```
+
+选择本身只写偏好键，不重建列表：重建只可能发生在面板构建与重新打开时（新装的浏览器只在这两个时刻才可能出现），和 `didChangeTag()`（Sources/DashboardWindow.swift:1216-1221）只写偏好、由另一行重渲染的做法一致。
 
 `showWindow(_:)` 里在 `loadTagOptions()` 之后加一行 `refreshBrowserOptions()`，让面板重新打开时能看到新装的浏览器。`rebuildForLanguage()` 无需改动：它调用 `setupUI()`，`makePreferencesCard()` 会重建列表。
 
