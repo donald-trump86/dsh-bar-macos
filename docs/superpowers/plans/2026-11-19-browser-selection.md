@@ -12,7 +12,7 @@
 
 ## 需求来源与裁定
 
-需求本身只有一句话，下面几条是本计划对它的解释，已写入 SDD ledger：
+需求本身只有一句话，下面几条是本计划对它的解释（执行期间逐条记入了 SDD ledger，ledger 是随结清删除的过程记录，本节的裁定随计划一起长期保留）：
 
 - **“检测到的本机其他浏览器”用什么筛。** 只收同时声明 `http`、`https` 且声明能处理 HTML 的应用，并要求它没有登记终端类客户端协议。本机实测：`LSApplicationCategoryType` 不可靠（Chrome/Brave/Orion 为空，Safari/Firefox/Zen/iTerm 都是 productivity）；iTerm 也声明 `http`/`https`/`public.html`，只能靠协议组排除。
 - **所选浏览器被卸载后怎么办。** 静默回退系统默认浏览器，不弹窗、不改偏好值（重装后自动恢复）。
@@ -546,7 +546,7 @@ git commit -m "chore: release v1.0.7"
 ## Verification recorded
 
 - `PYTHONDONTWRITEBYTECODE=1 make check`：PASS，20 项检查、84 行 `ok`、0 FAIL（在 `2652bbe` 上运行，日志 `/tmp/docs-check.log`）。新增的第 20 项 `Tests/browser-picker-check.py` 覆盖筛选规则、排序去重、偏好解析与回退路由。
-- 三个任务各自的实现与评审记录见 SDD ledger `.superpowers/sdd/2026-11-19-browser-selection/progress.md`：Task 1/2/3 的规格与质量评审均通过，无 Critical / Important；全分支评审的唯一阻塞项（README 快捷键行与计划文档里两处过期表述）已由 `2652bbe` 修正，定点复审 PASS。
+- 三个任务各自实现后又各自做了规格与质量的独立评审，均通过，无 Critical / Important 级问题；全分支评审的唯一阻塞项是两处过期文档表述（README 快捷键行仍写“在默认浏览器中打开”、本计划里“General 组最后一行”与 `(a)(b)` 两处与代码不符），已由 `2652bbe` 修正，定点复审 PASS。
 - `make` 完整通用构建：PASS，0 编译告警（`/tmp/universal-build.log`）。产物 `build/DeepSeek Harness Bar.app` 的 `CFBundleShortVersionString` 与 `CFBundleVersion` 均 `1.0.7`，`lipo -archs` 得 `x86_64 arm64`。
 - 本机实机探测（脱离夹具，直接编译 `Sources/BrowserLauncher.swift` 加一个只读的 `SettingsManager` 桩）：`systemDefaultBrowserName()` 返回 `Google Chrome`；`options()` 返回 7 个浏览器——Brave Browser、Firefox、Google Chrome、Google Chrome for Testing（Playwright 缓存里的副本）、Orion、Safari、Zen；iTerm 未出现。这条是夹具给不出的真实数据。
 - `Tests/settings-layout-check.py` 在 540/580 两种宽度、中英双语、明暗两种外观及各安装状态下生成 28 张离屏预览，新增行不溢出；`Tests/localization-check.py` PASS；`Tests/service-identity-check.py` PASS。
