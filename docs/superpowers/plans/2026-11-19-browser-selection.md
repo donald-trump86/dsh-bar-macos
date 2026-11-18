@@ -1,6 +1,6 @@
 # v1.0.7 浏览器选择 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 偏好设置新增“打开 Web 使用的浏览器”，选项为系统默认浏览器和本机检测到的其他浏览器；版本升到 1.0.7 并按既有流程推送、打 tag、发布 Release。
 
@@ -60,7 +60,7 @@
   - `SettingsManager.preferredBrowserBundleIdentifier: String?`（读写 `DSH_PreferredBrowser`）
 - Consumes: `SettingsManager.shared`、`NSWorkspace.shared`。
 
-- [ ] **Step 1: 写失败测试 `Tests/browser-picker-check.py`**
+- [x] **Step 1: 写失败测试 `Tests/browser-picker-check.py`**
 
 照 `Tests/update-availability-check.py` 的写法：`method(source, signature)` 用花括号配对从生产文件里取代码块，写进临时目录，`xcrun swiftc -Onone` 编译后运行，全部断言通过才打印 PASS。被测代码只取 `Sources/BrowserLauncher.swift` 中的 `struct BrowserCandidate` 与 `final class BrowserLauncher` 两个块（不要文件的 `import AppKit` 头，夹具用 Foundation + stub 代替）。
 
@@ -126,12 +126,12 @@ assert "removeObject(forKey: preferredBrowserKey)" in setting
 
 以及锁住 `ServiceManager.openBrowser()` 不再直接调 `NSWorkspace`：取该函数文本，断言两处都调用 `BrowserLauncher.shared.open(`，且函数体内不出现 `NSWorkspace.shared.open`。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 python3 Tests/browser-picker-check.py`
 Expected: FAIL — `Sources/BrowserLauncher.swift` 不存在，`FileNotFoundError` / `ValueError: substring not found`。
 
-- [ ] **Step 3: 实现 `Sources/BrowserLauncher.swift`**
+- [x] **Step 3: 实现 `Sources/BrowserLauncher.swift`**
 
 ```swift
 import AppKit
@@ -184,7 +184,7 @@ final class BrowserLauncher {
 
 实现要点（其余由实现者按签名写）：`options()` 遍历 `urlsForApplications`，过滤 `isBrowser`、跳过无 bundle id 的项、按 identifier 去重、按 `displayName.localizedCaseInsensitiveCompare` 排序；`isBrowser` 检查 (a) 所有协议组**合并后**同时含 `http` 与 `https`（Firefox 与 Zen 把它们分别登记在 `[["http"], ["https"], ["file"]]` 两个组里，所以不能按「某一组同时含两者」判断），(b) 所有组都不含 `clientSchemes`（`isDisjoint`），(c) `declaresHTML`；`displayName` 取 `url.deletingPathExtension().lastPathComponent`；`systemDefaultBrowserName` 用 `urlForApplication(toOpen: Self.sampleURL)` 再取显示名，取不到返回 `nil`；`open(_:)` 先读 `SettingsManager.shared.preferredBrowserBundleIdentifier`，能解析到 `urlForApplication(withBundleIdentifier:)` 且 `isBrowser(appURL)` 为真时 `NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())`，否则 `NSWorkspace.shared.open(url)`。
 
-- [ ] **Step 4: 加 `SettingsManager` 偏好键**
+- [x] **Step 4: 加 `SettingsManager` 偏好键**
 
 在 `preferredDshTag` 段之后插入，形式与 `preferredDshTag` 一致（`nil` 即删除键）：
 
@@ -210,7 +210,7 @@ final class BrowserLauncher {
     }
 ```
 
-- [ ] **Step 5: 改 `ServiceManager.openBrowser()` 与 `build.sh`**
+- [x] **Step 5: 改 `ServiceManager.openBrowser()` 与 `build.sh`**
 
 `openBrowser()` 保持全部身份判断与 URL 选择不变，只把两个打开点交给 launcher：
 
@@ -236,7 +236,7 @@ final class BrowserLauncher {
 │   ├── BrowserLauncher.swift   # 检测本机浏览器并决定 Open Web 用哪个打开
 ```
 
-- [ ] **Step 6: 让 `Tests/service-identity-check.py` 继续通过**
+- [x] **Step 6: 让 `Tests/service-identity-check.py` 继续通过**
 
 该文件把 `openBrowser()` 抽出来跑在 stub 世界里，只需补两个 stub（断言一条都不用改）：`final class NSWorkspace` 增加 `func urlForApplication(withBundleIdentifier bundleIdentifier: String) -> URL? { nil }`，并新增
 
@@ -249,7 +249,7 @@ final class BrowserLauncher {
 
 `BrowserLauncher` 在这个夹具里永远解析不到应用，因此每次都走 `NSWorkspace.shared.open(url)`，既有的 `NSWorkspace.shared.lastURL` 断言原样成立。
 
-- [ ] **Step 7: 把新检查接进 `Tests/run-checks.sh`**
+- [x] **Step 7: 把新检查接进 `Tests/run-checks.sh`**
 
 在文件末尾（第 19 项之后、`exit $FAILED` 之前）加：
 
@@ -262,13 +262,13 @@ else
 fi
 ```
 
-- [ ] **Step 8: 跑测试与全量检查**
+- [x] **Step 8: 跑测试与全量检查**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 python3 Tests/browser-picker-check.py` → Expected: PASS
 Run: `PYTHONDONTWRITEBYTECODE=1 python3 Tests/service-identity-check.py` → Expected: PASS
 Run: `PYTHONDONTWRITEBYTECODE=1 make check` → Expected: 20 项检查全 ok，无 FAIL
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add Sources/BrowserLauncher.swift Sources/SettingsManager.swift Sources/ServiceManager.swift build.sh README.md Tests/browser-picker-check.py Tests/run-checks.sh Tests/service-identity-check.py
@@ -290,7 +290,7 @@ git commit -m "feat: open the Web console in a chosen browser"
 - Consumes：`BrowserLauncher.shared.options()`, `.systemDefaultBrowserName()`, `BrowserCandidate`（Task 1 产出）；`SettingsManager.shared.preferredBrowserBundleIdentifier`。
 - Produces：`private let browserPopup = NSPopUpButton()`；`private func refreshBrowserOptions()`；`@objc private func didChangeBrowser()`。
 
-- [ ] **Step 1: 先写失败断言（改 `Tests/settings-layout-check.py`）**
+- [x] **Step 1: 先写失败断言（改 `Tests/settings-layout-check.py`）**
 
 `controls` 列表加一项 `("browser picker", panel.browserPopup)`；标题键列表加 `.openWebBrowser`；`rowControls` 加 `(.openWebBrowser, panel.browserPopup)`（重叠断言按行比较标题右缘与控制左缘，这一行的长标题正好是它要压的那条）。逐条渲染的 `geometry(_:active:)` 里只加一条与状态无关的宽度断言 `expect(panel.browserPopup.bounds.width >= 160, ...)`。
 
@@ -323,12 +323,12 @@ expect(panel.browserPopup.selectedItem?.representedObject as? String == "",
 SettingsManager.shared.preferredBrowserBundleIdentifier = nil
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 python3 Tests/settings-layout-check.py`
 Expected: FAIL — `DashboardWindow.swift` 编译失败（`browserPopup` 无此成员）。
 
-- [ ] **Step 3: 加双语文案**
+- [x] **Step 3: 加双语文案**
 
 `Key` 的 “Preferences rows” 组里、`case language, languageDesc, languageAutomatic` 之后加一行：
 
@@ -354,7 +354,7 @@ Expected: FAIL — `DashboardWindow.swift` 编译失败（`browserPopup` 无此�
         .systemDefaultBrowserNamed: "系统默认（{browser}）",
 ```
 
-- [ ] **Step 4: 面板里的控件、构建与切换**
+- [x] **Step 4: 面板里的控件、构建与切换**
 
 控件声明区（`private let languagePopup = NSPopUpButton()` 之后）加 `private let browserPopup = NSPopUpButton()`。
 
@@ -409,7 +409,7 @@ General 组的 rows 里，`permissionsAccess` 行之前插入：
 
 `showWindow(_:)` 里在 `loadTagOptions()` 之后加一行 `refreshBrowserOptions()`，让面板重新打开时能看到新装的浏览器。`rebuildForLanguage()` 无需改动：它调用 `setupUI()`，`makePreferencesCard()` 会重建列表。
 
-- [ ] **Step 5: 夹具补 stub**
+- [x] **Step 5: 夹具补 stub**
 
 `Tests/dashboard-ui-fixture.py` 的 STUBS：`final class SettingsManager` 加 `var preferredBrowserBundleIdentifier: String? = nil`；STUBS 末尾（`expect`/`pump` 之前）加
 
@@ -434,13 +434,13 @@ final class BrowserLauncher {
 }
 ```
 
-- [ ] **Step 6: 跑测试确认通过**
+- [x] **Step 6: 跑测试确认通过**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 python3 Tests/settings-layout-check.py` → Expected: PASS（英文/中文、540/580 宽、深浅色全部通过，PNG 仍在 `build/settings-preview`）
 Run: `PYTHONDONTWRITEBYTECODE=1 python3 Tests/localization-check.py` → Expected: PASS
 Run: `PYTHONDONTWRITEBYTECODE=1 make check` → Expected: 20 项全 ok
 
-- [ ] **Step 7: README 特性说明**
+- [x] **Step 7: README 特性说明**
 
 核心特性里「手动打开 Web」那条改成点名新设置，并在偏好设置 bullet 组里加一行：
 
@@ -454,7 +454,7 @@ Run: `PYTHONDONTWRITEBYTECODE=1 make check` → Expected: 20 项全 ok
   - **打开 Web 使用的浏览器**：系统默认浏览器，或本机检测到的其他浏览器。检测只读，列出的是同时声明 http/https 并能处理 HTML 的应用，终端等链接客户端不在列表内。
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add Sources/DashboardWindow.swift Sources/Localization.swift Tests/dashboard-ui-fixture.py Tests/settings-layout-check.py README.md
@@ -473,7 +473,7 @@ git commit -m "feat: choose the browser Open Web uses"
 **Interfaces:**
 - Consumes：Task 1/2 的行为；发布工作流按 tag 取 `Packaging/ReleaseNotes/${VERSION}.md` 与 `.html`。
 
-- [ ] **Step 1: 写发布说明（先写文本，再让版本与检查对齐）**
+- [x] **Step 1: 写发布说明（先写文本，再让版本与检查对齐）**
 
 `Packaging/ReleaseNotes/1.0.7.md`：
 
@@ -502,7 +502,7 @@ This release never changes the system default browser. The new row only decides 
 <p>This release never changes the system default browser. The new row only decides which application DSH Bar hands its own console URL to.</p>
 ```
 
-- [ ] **Step 2: 修改 `Info.plist` 版本**
+- [x] **Step 2: 修改 `Info.plist` 版本**
 
 ```bash
 python3 - <<'PY'
@@ -517,12 +517,12 @@ grep -n "1.0.7" Info.plist
 
 Expected: 两行 `1.0.7`（`CFBundleShortVersionString` 与 `CFBundleVersion`）。
 
-- [ ] **Step 3: 跑全量检查**
+- [x] **Step 3: 跑全量检查**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 make check` → Expected: 20 项全 ok（`Tests/sparkle-check.sh` 用的是自带的 `1.0.0` 夹具，不受影响）
 Run: `ARCHS=arm64 ./build.sh` → Expected: 构建成功，`build/DeepSeek Harness Bar.app/Contents/Info.plist` 里版本为 1.0.7（`grep -A1 CFBundleShortVersionString "build/DeepSeek Harness Bar.app/Contents/Info.plist"`）
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add Info.plist Packaging/ReleaseNotes/1.0.7.md Packaging/ReleaseNotes/1.0.7.html
@@ -540,3 +540,24 @@ git commit -m "chore: release v1.0.7"
 3. 打 annotated tag `v1.0.7`（不覆盖已有 tag）并推送，等待 `release.yml` 成功。
 4. 核验发布资产：ZIP 大小/SHA256、包内版本 1.0.7、`codesign --verify --deep --strict`、appcast 指向 v1.0.7。
 5. 把上述结果写进本计划的 `## Verification recorded` 与 `## Release verification recorded — v1.0.7` 两节，提交并推送这条记录。
+
+---
+
+## Verification recorded
+
+- `PYTHONDONTWRITEBYTECODE=1 make check`：PASS，20 项检查、84 行 `ok`、0 FAIL（在 `2652bbe` 上运行，日志 `/tmp/docs-check.log`）。新增的第 20 项 `Tests/browser-picker-check.py` 覆盖筛选规则、排序去重、偏好解析与回退路由。
+- 三个任务各自的实现与评审记录见 SDD ledger `.superpowers/sdd/2026-11-19-browser-selection/progress.md`：Task 1/2/3 的规格与质量评审均通过，无 Critical / Important；全分支评审的唯一阻塞项（README 快捷键行与计划文档里两处过期表述）已由 `2652bbe` 修正，定点复审 PASS。
+- `make` 完整通用构建：PASS，0 编译告警（`/tmp/universal-build.log`）。产物 `build/DeepSeek Harness Bar.app` 的 `CFBundleShortVersionString` 与 `CFBundleVersion` 均 `1.0.7`，`lipo -archs` 得 `x86_64 arm64`。
+- 本机实机探测（脱离夹具，直接编译 `Sources/BrowserLauncher.swift` 加一个只读的 `SettingsManager` 桩）：`systemDefaultBrowserName()` 返回 `Google Chrome`；`options()` 返回 7 个浏览器——Brave Browser、Firefox、Google Chrome、Google Chrome for Testing（Playwright 缓存里的副本）、Orion、Safari、Zen；iTerm 未出现。这条是夹具给不出的真实数据。
+- `Tests/settings-layout-check.py` 在 540/580 两种宽度、中英双语、明暗两种外观及各安装状态下生成 28 张离屏预览，新增行不溢出；`Tests/localization-check.py` PASS；`Tests/service-identity-check.py` PASS。
+- `git diff --check`：PASS。验证只用合成 `.app` 目录与 stub，没有真的打开浏览器，没有读写系统默认浏览器设置；被验证的 app 未安装、未启动，本机 DSH 服务未重启。
+
+## Release verification recorded — v1.0.7
+
+- Tag `v1.0.7`（annotated，tag 对象 `2cd623319b9e2db21d5454cb3aae7e3f3a6edd3e`）指向 `2652bbe1ae578da5715fceb662caa4178deed146`。[CI 44404207407](https://github.com/donald-trump86/dsh-bar-macos/actions/runs/44404207407) 在该提交上通过通用构建与全套检查（`macos-15` runner）。
+- [Release 工作流 44422098851](https://github.com/donald-trump86/dsh-bar-macos/actions/runs/44422098851) 成功。[DeepSeek Harness Bar v1.0.7](https://github.com/donald-trump86/dsh-bar-macos/releases/tag/v1.0.7) 于 `2026-11-18T23:37:06Z` 发布，非 draft、非 prerelease，附件为通用 ZIP、SHA256 文件与 EdDSA 签名 appcast。
+- 下载公开资产复核：`DSH-Bar-1.0.7-universal.zip` 3,830,270 字节，SHA256 `c0a96c2667d37ef60ec850c1fd8c16b1416d032f2fde3a9baefac147138f9dae`，与随附 `.sha256` 文件及 GitHub 资产 digest 三者一致；`unzip -t` 无错误；包内 `CFBundleShortVersionString` 与 `CFBundleVersion` 均 `1.0.7`，`CFBundleIdentifier` 为 `ai.deepseek.dsh-bar`，`LSMinimumSystemVersion` 为 13.0，`arm64` 与 `x86_64` 双切片齐全，内嵌 `Sparkle.framework`，二进制中含 `DSH_PreferredBrowser` 字面量。
+- `codesign --verify --deep --strict` 对下载的 app PASS。签名者 `DSH Bar Self-Signing`，叶证书 SHA1 为 `34959d783d07b4e31befa94f5f5c33f8825ba32e`，与 v1.0.4/v1.0.5/v1.0.6 一致；未经 Apple 公证，与发布说明一致。
+- app 内嵌的 `SUPublicEDKey` 与 `SUFeedURL` 未变（与 v1.0.6 逐字相同）。用 CryptoKit 直接对下载的 ZIP 校验 appcast 里的 `sparkle:edSignature`，PASS；appcast 的 `version`/`shortVersionString` 为 1.0.7、`minimumSystemVersion` 为 13.0、`length` 3830270 与实际字节数一致，`releases/latest/download/appcast.xml` 与本次发布附带的 appcast 逐字节相同。
+- 发布正文就是上面审定过的英文说明（三条改动加 Permissions 段落），其后由工作流追加 Installation 小节；md 与 html 两份说明都嵌入了 appcast 的 `description`。
+- 核验只读取下载的公开资产，没有安装或替换本机现有的 app，也没有重启本机的 DSH 服务。
