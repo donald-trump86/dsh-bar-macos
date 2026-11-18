@@ -552,6 +552,19 @@ git commit -m "chore: release v1.0.7"
 - `Tests/settings-layout-check.py` 在 540/580 两种宽度、中英双语、明暗两种外观及各安装状态下生成 28 张离屏预览，新增行不溢出；`Tests/localization-check.py` PASS；`Tests/service-identity-check.py` PASS。
 - `git diff --check`：PASS。验证只用合成 `.app` 目录与 stub，没有真的打开浏览器，没有读写系统默认浏览器设置；被验证的 app 未安装、未启动，本机 DSH 服务未重启。
 
+### 已知延后项（不阻塞发布，留给后续维护）
+
+评审中提出、经全分支评审逐条裁为延后的观察项，按“下次动到这块时顺手改”处理：
+
+- `Tests/settings-layout-check.py` 直接调用 `panel.didChangeBrowser()`，没有断言 `browserPopup` 的 `target`/`action`；删掉 `Sources/DashboardWindow.swift:581-582` 两行不会有测试变红。仓库里同类断言现成可抄：`Tests/permissions-guide-check.py:112`。
+- `Tests/settings-layout-check.py:257` 的 `"System default (Google Chrome)"` 与夹具里的 `preferredDefaultName`（`Tests/dashboard-ui-fixture.py:165`）写死耦合，失败时是显式报错，不会静默放过。
+- 新增的两条说明文案带句号，同一表格其余条不带（`Sources/Localization.swift:339`、`:641`），纯风格。
+- `Sources/BrowserLauncher.swift:42-45` 每个候选要构造 3-4 次 `Bundle`、读两次 `Info.plist`；候选数只有个位数，代价可忽略。`options()`/`open()` 均为主线程调用（`Sources/HotKeyManager.swift:151-155` 已切主线程）。
+- `Sources/BrowserLauncher.swift:73-74` 用异步的 `open(_:withApplicationAt:configuration:)` 且不带完成回调，启动失败没有回执；与改动前 `NSWorkspace.shared.open(url)` 的形态一致，不是本次引入的问题。
+- `Sources/DashboardWindow.swift:1575` 的菜单项图标依赖 macOS 27+ 的 `preferredImageVisibility` 默认行为，未来版本可能退化成纯文字弹出菜单；属观感问题。
+- 两份发布说明末尾那句“重装后自动恢复”指的是下次构建或重开面板时重建列表，不是运行中的实时切换；该措辞是用户审定过的原文，不改。
+- README 项目结构树的 `Packaging/` 下只列了 `DSHBar.entitlements`，没有 `ReleaseNotes/`——1.0.3 到 1.0.6 都如此，同理不改。
+
 ## Release verification recorded — v1.0.7
 
 - Tag `v1.0.7`（annotated，tag 对象 `2cd623319b9e2db21d5454cb3aae7e3f3a6edd3e`）指向 `2652bbe1ae578da5715fceb662caa4178deed146`。[CI 44404207407](https://github.com/donald-trump86/dsh-bar-macos/actions/runs/44404207407) 在该提交上通过通用构建与全套检查（`macos-15` runner）。
