@@ -26,7 +26,7 @@
 - 所有新用户可见文案同时写入 `english` 与 `chinese` 表，占位符名一致（`Tests/localization-check.py` 双向校验）。
 - 检测规则写死如下：候选来自 `NSWorkspace.shared.urlsForApplications(toOpen: BrowserLauncher.sampleURL)`，`sampleURL = URL(string: "https://example.com")!`；必须 (a) `CFBundleURLTypes` 同时声明 `http` 与 `https`；(b) 任一协议组都不含客户端协议 deny list：`ssh sftp telnet rlogin ftp tftp mailto news nntp gopher wais whois gemini titan irc ircs afp smb nfs x-man-page`；(c) `CFBundleDocumentTypes` 任一项的 `LSItemContentTypes` 含 `public.html`，或 `CFBundleTypeExtensions` 含 `html htm shtml xhtml xht` 之一；(d) 能读到 `CFBundleIdentifier`。显示名取 `.app` 文件名去掉扩展名；按显示名 `localizedCaseInsensitiveCompare` 排序，按 bundle identifier 去重。
 - 偏好键 `DSH_PreferredBrowser`，值为 bundle identifier；读回 `nil` 表示系统默认浏览器。
-- 启动路由：首选值能解析到应用且该应用仍满足 (a)(b) 时用 `NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())`；否则（含首选值为 `nil`）用 `NSWorkspace.shared.open(url)`。
+- 启动路由：首选值能解析到应用且该应用仍满足 (a)(b)(c) 时用 `NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())`；否则（含首选值为 `nil`）用 `NSWorkspace.shared.open(url)`。
 - 版本：`Info.plist` 的 `CFBundleShortVersionString` 与 `CFBundleVersion` 都改为 `1.0.7`；发布说明 `Packaging/ReleaseNotes/1.0.7.md` 与 `1.0.7.html` 用英文，结构对齐 1.0.6。
 - 测试不得真的打开浏览器、不得读写系统默认浏览器设置：只用合成 `.app` 目录 + stub `NSWorkspace`。
 - `PYTHONDONTWRITEBYTECODE=1 make check` 必须全绿后才有下一次提交。提交信息沿用 `feat:` / `test:` / `chore:` / `docs:`。
@@ -292,7 +292,7 @@ git commit -m "feat: open the Web console in a chosen browser"
 
 - [ ] **Step 1: 先写失败断言（改 `Tests/settings-layout-check.py`）**
 
-`controls` 列表加一项 `("browser picker", panel.browserPopup)`；标题键列表加 `.openWebBrowser`；`rowControls` 加 `(.openWebBrowser, panel.browserPopup)`（`browserPopup` 是 General 组的最后一行、控制列最靠右，正好是重叠断言要压的那条）。逐条渲染的 `geometry(_:active:)` 里只加一条与状态无关的宽度断言 `expect(panel.browserPopup.bounds.width >= 160, ...)`。
+`controls` 列表加一项 `("browser picker", panel.browserPopup)`；标题键列表加 `.openWebBrowser`；`rowControls` 加 `(.openWebBrowser, panel.browserPopup)`（重叠断言按行比较标题右缘与控制左缘，这一行的长标题正好是它要压的那条）。逐条渲染的 `geometry(_:active:)` 里只加一条与状态无关的宽度断言 `expect(panel.browserPopup.bounds.width >= 160, ...)`。
 
 列表内容与“重建后选择不丢”两条断言放在文件末尾、`geometry` 之外单独跑一次（它们在 `geometry` 内会污染其后所有组合：一旦把偏好设成 `com.example.chrome`，后续每次重建前的“系统默认在首位且被选中”就不再成立）：
 
