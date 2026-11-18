@@ -80,6 +80,7 @@ final class Localization {
         case notifications, notificationsDesc, dshCommandLine
         case permissionsAccess, permissionsAccessDesc, permissionsOpenGuide
         case language, languageDesc, languageAutomatic
+        case openWebBrowser, openWebBrowserDesc, systemDefaultBrowser, systemDefaultBrowserNamed
         case searchingPath, detectingDsh, installedAt, notFoundInstallNpm
 
         // Install channel
@@ -334,6 +335,10 @@ final class Localization {
         .language: "Language",
         .languageDesc: "Applies immediately, no restart needed",
         .languageAutomatic: "Automatic",
+        .openWebBrowser: "Open Web in",
+        .openWebBrowserDesc: "The console opens here. Other browsers found on this Mac are listed below.",
+        .systemDefaultBrowser: "System default",
+        .systemDefaultBrowserNamed: "System default ({browser})",
         .searchingPath: "Checking DSH, Node, and npm in PATH…",
         .detectingDsh: "Detecting DSH CLI…",
         .installedAt: "Installed: {path}{version}",
@@ -632,6 +637,10 @@ final class Localization {
         .language: "语言",
         .languageDesc: "立即生效，无需重启",
         .languageAutomatic: "自动",
+        .openWebBrowser: "打开 Web 使用的浏览器",
+        .openWebBrowserDesc: "控制台在此浏览器中打开；本机找到的其他浏览器列在下方。",
+        .systemDefaultBrowser: "系统默认浏览器",
+        .systemDefaultBrowserNamed: "系统默认（{browser}）",
         .searchingPath: "正在检查 PATH 中的 DSH、Node 和 npm…",
         .detectingDsh: "正在检测 DSH CLI…",
         .installedAt: "已安装：{path}{version}",

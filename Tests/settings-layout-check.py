@@ -77,6 +77,7 @@ func geometry(_ name: String, active: Bool) {
     expect(panel.tagPopup.bounds.width >= 160, "channel popup title area collapsed: \(name), width=\(panel.tagPopup.bounds.width)")
     expect(panel.tagPopup.selectedItem?.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
            "available channel selection has no visible title: \(name)")
+    expect(panel.browserPopup.bounds.width >= 160, "browser picker title area collapsed: \(name), width=\(panel.browserPopup.bounds.width)")
     let controls: [(String, NSView)] = [
         ("port", panel.portField), ("port reset", panel.portResetButton),
         ("launch at login", panel.launchAtLoginCheckbox), ("hotkey", panel.hotKeyButton),
@@ -84,7 +85,8 @@ func geometry(_ name: String, active: Bool) {
         ("channel popup", panel.tagPopup), ("install", panel.tagInstallButton),
         ("update check", panel.updateCheckButton), ("auto update", panel.autoUpdateCheckbox),
         ("recovery", panel.autoRestartCheckbox), ("notification action", panel.notificationActionButton),
-        ("permissions guide", panel.permissionsGuideButton), ("language", panel.languagePopup)
+        ("permissions guide", panel.permissionsGuideButton), ("language", panel.languagePopup),
+        ("browser picker", panel.browserPopup)
     ] + (active ? [("cancel", panel.tagCancelButton), ("progress", panel.tagInstallProgress),
                    ("metrics", panel.tagInstallMetricsLabel), ("log disclosure", panel.tagDetailsButton),
                    ("log", panel.tagLogScroll)] : [])
@@ -112,13 +114,14 @@ func geometry(_ name: String, active: Bool) {
     for key: Localization.Key in [.settingsService, .settingsVersions, .settingsGeneral,
                                   .serverPort, .automaticRecovery, .dshCommandLine, .installChannel,
                                   .barUpdates, .launchAtLogin, .globalShortcut, .notifications,
-                                  .permissionsAccess, .permissionsAccessDesc, .language] {
+                                  .permissionsAccess, .permissionsAccessDesc, .language,
+                                  .openWebBrowser] {
         expect(labels.contains { $0.stringValue == L(key) }, "missing grouped setting title \(key): \(name)")
     }
     // Settings rows must keep their control column separate from wrapping text.
     let rowControls: [(Localization.Key, NSView)] = [
         (.globalShortcut, panel.hotKeyButton), (.permissionsAccess, panel.permissionsGuideButton),
-        (.language, panel.languagePopup)
+        (.language, panel.languagePopup), (.openWebBrowser, panel.browserPopup)
     ]
     for (key, button) in rowControls {
         let label = labels.first { $0.stringValue == L(key) }!
@@ -239,6 +242,49 @@ pump(0.1)
 expect(model.installActivity == beforeLanguage, "language rebuild reset install snapshot")
 geometry("language-rebuild", active: true)
 expect(panel.tagInstallStatusLabel.stringValue.contains("Cancelling"), "language rebuild retained old task text")
+// Browser row: list contents, and that a rebuild keeps the choice. Both run
+// once, outside `geometry`: storing a preference inside it would make every
+// later rebuild start from something other than the system default.
+SettingsManager.shared.preferredBrowserBundleIdentifier = nil
+panel.setupUI()
+panel.updateState(ServiceManager.shared.snapshot)
+let browserItems = panel.browserPopup.itemArray.map { $0.title }
+expect(panel.browserPopup.numberOfItems == 3, "browser picker items: \(browserItems)")
+expect(panel.browserPopup.selectedItem?.representedObject as? String == "",
+       "system default must be the first, pre-selected item")
+expect(browserItems[1] == "Google Chrome" && browserItems[2] == "Google Chrome for Testing",
+       "detected browsers missing or unsorted: \(browserItems)")
+expect(browserItems[0] == "System default (Google Chrome)",
+       "system default item must name the handler: \(browserItems[0])")
+// Without a resolvable handler the first item still has to say something.
+BrowserLauncher.shared.preferredDefaultName = nil
+panel.setupUI()
+expect(panel.browserPopup.itemArray.first?.title == "System default",
+       "a missing default handler must fall back to the plain title")
+BrowserLauncher.shared.preferredDefaultName = "Google Chrome"
+panel.setupUI()
+// A language rebuild (setupUI) must not drop the choice.
+SettingsManager.shared.preferredBrowserBundleIdentifier = "com.example.chrome"
+panel.setupUI()
+panel.updateState(ServiceManager.shared.snapshot)
+expect(panel.browserPopup.selectedItem?.representedObject as? String == "com.example.chrome",
+       "language rebuild reset the chosen browser")
+// A remembered browser that is no longer listed falls back to the first item,
+// not to an empty selection.
+SettingsManager.shared.preferredBrowserBundleIdentifier = "com.example.uninstalled"
+panel.setupUI()
+expect(panel.browserPopup.selectedItem?.representedObject as? String == "",
+       "a stale preference must fall back to the system default item")
+// The action handler must persist the choice through the ordinary key.
+panel.browserPopup.selectItem(at: 1)
+panel.didChangeBrowser()
+expect(SettingsManager.shared.preferredBrowserBundleIdentifier == "com.example.chrome",
+       "choosing a browser must persist its bundle identifier")
+panel.browserPopup.selectItem(at: 0)
+panel.didChangeBrowser()
+expect(SettingsManager.shared.preferredBrowserBundleIdentifier == nil,
+       "choosing the system default must clear the preference, not store an empty name")
+SettingsManager.shared.preferredBrowserBundleIdentifier = nil
 expect(!window.isVisible, "fixture made dashboard visible")
 print("PASS settings layout: actual complete dashboard, 540/580 widths, English/Chinese, light/dark, idle/download/unknown/install/cancel, language rebuild, service version provenance, reusable diagnostics window at minimum width; 28 PNGs at \(output.path)")
 '''

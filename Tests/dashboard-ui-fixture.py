@@ -27,6 +27,7 @@ final class SettingsManager {
     var globalHotKeyDisplayString = "⌃ ⌥ ⌘ D"
     var isLaunchAtLoginEnabled = false
     var autoRestartEnabled = true
+    var preferredBrowserBundleIdentifier: String? = nil
     var onHotKeyChanged: (() -> Void)?
     func addPortObserver(_ callback: @escaping (Int) -> Void) -> UUID { UUID() }
     func updateGlobalHotKey(keyCode: UInt32, modifiers: UInt32, display: String) {}
@@ -153,6 +154,24 @@ enum PermissionsFixture {
         if let window = window { shownWindows.append(ObjectIdentifier(window)) }
     }
     static func activate() { activationCalls += 1 }
+}
+struct BrowserCandidate: Equatable {
+    let bundleIdentifier: String
+    let displayName: String
+    let applicationURL: URL
+}
+final class BrowserLauncher {
+    static let shared = BrowserLauncher()
+    var preferredDefaultName: String? = "Google Chrome"
+    var detected: [BrowserCandidate] = [
+        BrowserCandidate(bundleIdentifier: "com.example.chrome", displayName: "Google Chrome",
+                         applicationURL: URL(fileURLWithPath: "/Applications/Google Chrome.app")),
+        BrowserCandidate(bundleIdentifier: "com.example.chrome.testing", displayName: "Google Chrome for Testing",
+                         applicationURL: URL(fileURLWithPath: "/Applications/Google Chrome for Testing.app"))
+    ]
+    func options() -> [BrowserCandidate] { detected }
+    func systemDefaultBrowserName() -> String? { preferredDefaultName }
+    func open(_ url: URL) {}
 }
 func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
     if !condition() {

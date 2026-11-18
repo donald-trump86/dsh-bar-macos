@@ -210,6 +210,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
     private let notificationActionButton = NSButton()
     private let permissionsGuideButton = NSButton()
     private let languagePopup = NSPopUpButton()
+    private let browserPopup = NSPopUpButton()
     private var languageObserverToken: UUID?
     /// Guards against rebuilding the panel twice for one effective language.
     private var lastEffectiveLanguage: AppLanguage = Localization.shared.effective
@@ -323,6 +324,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         autoRestartCheckbox.state = SettingsManager.shared.autoRestartEnabled ? .on : .off
         ServiceManager.shared.detectDshInstallation()
         loadTagOptions()
+        refreshBrowserOptions()
         // Re-float explicitly: the panel may have been dropped to the normal
         // level when it lost focus before being closed.
         window?.level = .floating
@@ -575,6 +577,12 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
 
         configureActionButton(permissionsGuideButton, title: L(.permissionsOpenGuide), action: #selector(didClickPermissionsGuide))
 
+        refreshBrowserOptions()
+        browserPopup.target = self
+        browserPopup.action = #selector(didChangeBrowser)
+        browserPopup.setAccessibilityLabel(L(.openWebBrowser))
+        browserPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
+
         notificationInfoLabel.font = .systemFont(ofSize: 12)
         notificationInfoLabel.textColor = .secondaryLabelColor
         configureActionButton(notificationActionButton, title: L(.notifActionSettings), action: #selector(didClickNotificationAction))
@@ -638,6 +646,7 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
             settingsRow(text: makeTextStack(title: L(.launchAtLogin), description: L(.launchAtLoginDesc)), control: launchAtLoginCheckbox),
             settingsRow(text: makeTextStack(title: L(.globalShortcut), description: L(.globalShortcutDesc)), control: hotKeyControls),
             settingsRow(text: notificationText, control: notificationActionButton),
+            settingsRow(text: makeTextStack(title: L(.openWebBrowser), description: L(.openWebBrowserDesc)), control: browserPopup),
             settingsRow(text: makeTextStack(title: L(.permissionsAccess), description: L(.permissionsAccessDesc)), control: permissionsGuideButton),
             settingsRow(text: makeTextStack(title: L(.language), description: L(.languageDesc)), control: languagePopup)
         ])
@@ -1547,6 +1556,35 @@ final class DashboardWindowController: NSWindowController, NSTextFieldDelegate {
         guard let raw = languagePopup.selectedItem?.representedObject as? String,
               let language = AppLanguage(rawValue: raw) else { return }
         SettingsManager.shared.language = language
+    }
+
+    /// Rebuilds the popup from what LaunchServices reports right now. The
+    /// selected browser is re-read here so a language rebuild or a browser
+    /// that was uninstalled since the last open both land on a valid item.
+    private func refreshBrowserOptions() {
+        let launcher = BrowserLauncher.shared
+        browserPopup.removeAllItems()
+        let defaultTitle = launcher.systemDefaultBrowserName().map {
+            L(.systemDefaultBrowserNamed, ["browser": $0])
+        } ?? L(.systemDefaultBrowser)
+        browserPopup.addItem(withTitle: defaultTitle)
+        browserPopup.lastItem?.representedObject = ""
+        for candidate in launcher.options() {
+            browserPopup.addItem(withTitle: candidate.displayName)
+            browserPopup.lastItem?.representedObject = candidate.bundleIdentifier
+            browserPopup.lastItem?.image = NSWorkspace.shared.icon(forFile: candidate.applicationURL.path)
+        }
+        let preferred = SettingsManager.shared.preferredBrowserBundleIdentifier ?? ""
+        let index = browserPopup.itemArray.firstIndex { ($0.representedObject as? String) == preferred }
+        browserPopup.selectItem(at: index ?? 0)
+    }
+
+    /// Records the choice only. The list is rebuilt when the panel is built or
+    /// reopened, which is the only time a newly installed browser can appear.
+    @objc private func didChangeBrowser() {
+        let identifier = browserPopup.selectedItem?.representedObject as? String
+        SettingsManager.shared.preferredBrowserBundleIdentifier =
+            (identifier?.isEmpty ?? true) ? nil : identifier
     }
 
     /// Rebuilds the panel in the new language.
